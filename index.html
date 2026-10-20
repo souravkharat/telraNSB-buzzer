@@ -234,8 +234,9 @@ function judge(kind){ // 'c' | 'w' | 'p'
     nextTossup();render();
   }
 }
+function flipInt(){if(G.phase!=='buzzed'||!G.buzz)return;G.buzz.interrupt=!G.buzz.interrupt;render()}
 function curPairHasBonus(){return !!(G.pairs[G.qi]&&G.pairs[G.qi].b)}
-function skip(){snapshot();nextTossup();render()}
+function skip(){snapshot();if(G.part!=='b'&&['ready','reading','open'].includes(G.phase))ev('tu-skip');nextTossup();render()}
 // ticking
 setInterval(()=>{
   if(!G)return;
@@ -251,7 +252,7 @@ setInterval(()=>{
 const PHASE_TXT={ready:'Ready — press SPACE, then read the toss-up',reading:'READING — buzz now = interrupt. Press SPACE the moment you finish reading',open:'BUZZERS OPEN',buzzed:'',dead:'Time — no answer',bonus_ready:'BONUS — read it, then SPACE',bonus_timer:'BONUS — 20 seconds',end:'Set finished'};
 function statusHtml(forPlayers){
   let t=PHASE_TXT[G.phase];let cls='st-'+G.phase;
-  if(G.phase==='buzzed'){const sl=seatLabel(G.buzz.team,G.buzz.seat);t=`${sl?`<span class="seat c${G.buzz.team}">${esc(sl)}</span> · `:''}<span class="c${G.buzz.team}">${esc(G.buzz.name)}</span>${sl?'':' · '+esc(G.teams[G.buzz.team].name)}${G.buzz.interrupt?' <span style="color:var(--warn)">(INTERRUPT)</span>':''}`}
+  if(G.phase==='buzzed'){const sl=seatLabel(G.buzz.team,G.buzz.seat);t=`${sl?`<span class="seat c${G.buzz.team}">${esc(sl)}</span> · `:''}<span class="c${G.buzz.team}">${esc(G.buzz.name)}</span>${sl?'':' · '+esc(G.teams[G.buzz.team].name)}${G.buzz.interrupt?' <span style="color:var(--warn)">(INTERRUPT)</span>':''}${forPlayers?'':` <span class="small mute">· press I if this ${G.buzz.interrupt?'was NOT':'WAS'} an interrupt</span>`}`}
   if(G.phase==='reading'&&G.locked.length)t='RE-READING for '+unlocked().map(x=>G.teams[x].name).join(' / ');
   if(G.phase.startsWith('bonus')){t=(G.phase==='bonus_ready'?'BONUS for ':'BONUS · ')+esc(G.teams[G.bonusTeam].name)+(G.timeUp?' — TIME':'');
     if(G.phase==='bonus_timer'&&G.warn5&&!G.timeUp){t+=' — 5 SECONDS';cls+=' warn5'}
@@ -271,7 +272,7 @@ let bc;try{bc=new BroadcastChannel('telra-buzz')}catch(e){}
 function broadcast(){const st=publicState();for(const pid in G.players){const p=G.players[pid];if(p.conn&&p.conn.open){try{p.conn.send({...st,you:{team:p.team,name:p.name,seat:p.seat||''}})}catch(e){}}}bc&&bc.postMessage(st);if(COS.size){const co=coState(st);for(const c of COS){if(c.open)try{c.send(co)}catch(e){}}}}
 function coState(st){const q=curQ();const pl=Object.values(G.players).map(p=>({seat:p.seat||'',name:p.name,team:p.team,online:!!p.online,c:(p.s||{}).c||0,w:(p.s||{}).w||0,iw:(p.s||{}).iw||0}));
   return {...st,t:'co',label:G.setLabel,paper:!!G.paper,part:G.part,q:q&&{question:q.question,choices:q.choices||null,type:q.type,category:q.category,tier:q.tier,yr:q.yr,answer:q.answer},players:pl}}
-function coCmd(m){const a=m.a;if(a==='space')advance();else if(a==='c'||a==='w'||a==='p')judge(a);else if(a==='u')undo();else if(a==='n')skip();else if(a==='t')toggleClock();else if(a==='half')nextHalf()}
+function coCmd(m){const a=m.a;if(a==='space')advance();else if(a==='c'||a==='w'||a==='p')judge(a);else if(a==='u')undo();else if(a==='n')skip();else if(a==='t')toggleClock();else if(a==='half')nextHalf();else if(a==='i')flipInt()}
 
 // ================= HOST SETUP =================
 function hostSetup(mode){
@@ -359,7 +360,7 @@ function hostMain(){
         <kbd>C</kbd><span>Correct (+4 toss-up, +10 bonus)</span><kbd>W</kbd><span>Wrong (also stalling past ~2 s). If it was an interrupt: re-read in full for the other team, press Space (+4 to them only if the interrupt penalty is switched on). If the question was fully read: no points, other team gets 5 s</span>
         <kbd>P</kbd><span>Blurt (answered before being recognized) or talking on a toss-up. Same scoring as Wrong — +4 to others only if it was an interrupt. Logged as a penalty</span>
         <kbd>U</kbd><span>Buzzed before the subject was read? Press Undo — not an interrupt, player can buzz again</span>
-        <kbd>U</kbd><span>Undo last call</span><kbd>N</kbd><span>Skip question</span><kbd>T</kbd><span>Game clock</span></div>
+        <kbd>U</kbd><span>Undo last call</span><kbd>N</kbd><span>Skip question</span><kbd>T</kbd><span>Game clock</span><kbd>I</kbd><span>Flip interrupt on the current buzz (if you forgot SPACE after reading)</span></div>
         <label class="small row" style="margin-top:8px"><input type="checkbox" id="intpen" ${intPenOn()?'checked':''}> Interrupt penalty: wrong interrupt gives the other team(s) +4. Off = no points, the team is just locked out (interrupts are still logged)</label>
         <label class="small row" style="margin-top:8px"><input type="checkbox" id="voice" ${voiceOn()?'checked':''}> Timekeeper voice: says "Five seconds" on bonuses and "Time" when the clock runs out (unmute this laptop / share computer audio in the meeting)</label>
         <p class="small mute" style="margin:6px 0 0">Positions: pick each player's seat (A Captain, A1–A3, A4 = alternate) in the list. The buzz shows the seat, like the real NSB lights. Seats are remembered for next time.</p>
@@ -374,7 +375,7 @@ function hostMain(){
     if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
     if(G.mode==='local'&&/^[0-9]$/.test(e.key)){if(!e.repeat)onBuzz('k'+e.key,performance.now());e.preventDefault();return}
     const k=e.key.toLowerCase();
-    if(k===' '){e.preventDefault();advance()}else if(k==='c')judge('c');else if(k==='w')judge('w');else if(k==='p')judge('p');else if(k==='u')undo();else if(k==='n')skip();else if(k==='t')toggleClock();
+    if(k===' '){e.preventDefault();advance()}else if(k==='c')judge('c');else if(k==='w')judge('w');else if(k==='p')judge('p');else if(k==='u')undo();else if(k==='n')skip();else if(k==='t')toggleClock();else if(k==='i')flipInt();
   };
   render();
 }
@@ -404,7 +405,7 @@ function renderTimersOnly(){
   if(G.timerEnd||G.clock.running)bc&&bc.postMessage(publicState());
 }
 function cycleTeam(id){const p=G.players[id];const t=teamsList();p.team=t[(t.indexOf(p.team)+1)%t.length];p.seat='';autoSeat(id);render()}
-const KLAB={'tu-c':'Toss-up correct','tu-w':'Toss-up wrong','tu-int-w':'Wrong interrupt','penalty':'Blurt / talking','tu-dead':'No one buzzed','bonus-c':'Bonus correct','bonus-w':'Bonus wrong','bonus-miss':'Bonus timed out'};
+const KLAB={'tu-c':'Toss-up correct','tu-w':'Toss-up wrong','tu-int-w':'Wrong interrupt','penalty':'Blurt / talking','tu-dead':'No one buzzed','tu-skip':'Skipped','bonus-c':'Bonus correct','bonus-w':'Bonus wrong','bonus-miss':'Bonus timed out'};
 const SUBJS=['Life Science','Earth Science','Chemistry','Physics','Math','Energy','General Science'];
 function sessionRecord(){return {date:new Date().toISOString(),set:G.setLabel,teams:teamsList().map(t=>({k:t,name:G.teams[t].name,score:G.teams[t].score})),
   players:Object.values(G.players).map(p=>({name:p.name,team:p.team})),log:G.log.slice()}}
@@ -419,9 +420,9 @@ function summarize(recs){ // per player x subject
   return Object.values(P).sort((a,b)=>(b.tot.c*4-b.tot.w*2)-(a.tot.c*4-a.tot.w*2));
 }
 function summaryRows(recs){
-  const rows=[['Player','Team','Primary subject','Right','Wrong','Wrong interrupts','Blurts / talking','Accuracy %','Own-subject right','Own-subject wrong','Net points (4 x right - 4 x points given away)','Sessions joined'].concat(SUBJS.map(s=>s+' right/wrong'))];
+  const rows=[['Player','Team','Primary subject','Right','Wrong','Wrong interrupts','Blurts / talking','Accuracy %','Own-subject right','Own-subject wrong','Net points (4 x right - 4 x points given away)','Sessions joined'].concat(SUBJS.map(s=>s+' (R = right, W = wrong)'))];
   for(const p of summarize(recs)){const own=p.by[PRIMARY[p.name]]||{c:0,w:0};const n=p.tot.c+p.tot.w;
-    rows.push([p.name,p.team,PRIMARY[p.name]||'',p.tot.c,p.tot.w,p.tot.iw,p.tot.pen,n?Math.round(100*p.tot.c/n):'',own.c,own.w,p.tot.c*4-4*(p.tot.gave||0),p.joined||''].concat(SUBJS.map(s=>p.by[s]?`${p.by[s].c}/${p.by[s].w}`:'')))}
+    rows.push([p.name,p.team,PRIMARY[p.name]||'',p.tot.c,p.tot.w,p.tot.iw,p.tot.pen,n?Math.round(100*p.tot.c/n):'',own.c,own.w,p.tot.c*4-4*(p.tot.gave||0),p.joined||''].concat(SUBJS.map(s=>p.by[s]?`${p.by[s].c}R ${p.by[s].w}W`:'')))}
   return rows}
 function logRows(recs){const rows=[['Session date','Set','Q#','Part','Subject','Bank category','Event','Player','Team','Interrupt','Question','Answer']];
   for(const r of recs)for(const e of r.log){const q=QBY[e.qid]||{};rows.push([r.date.slice(0,16).replace('T',' '),r.set,e.qn,e.part,e.subj,e.cat,KLAB[e.k]||e.k,e.name||'',e.t||'',e.interrupt?'yes':'',q.question||'',q.answer||''])}
@@ -528,7 +529,7 @@ function cohostView(arg){
   let S=null,conn=null,remEnd=0,clockAt=0,peer=null,lastB='',lastW='';
   const send=a=>{if(conn&&conn.open)conn.send({t:'cmd',a})};
   app.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>send(b.dataset.a));
-  document.onkeydown=e=>{const k=e.key.toLowerCase();const map={' ':'space',c:'c',w:'w',p:'p',u:'u',n:'n',t:'t'};if(map[k]&&!e.repeat){e.preventDefault();send(map[k])}};
+  document.onkeydown=e=>{const k=e.key.toLowerCase();const map={' ':'space',c:'c',w:'w',p:'p',u:'u',n:'n',t:'t',i:'i'};if(map[k]&&!e.repeat){e.preventDefault();send(map[k])}};
   function draw(){if(!S)return;
     G={...S,teams:Object.fromEntries(S.teams.map(t=>[t.k,t])),nTeams:S.teams.length,paper:true};
     $('#status').innerHTML=statusHtml(false);$('#scores').innerHTML=scoresHtml();G=null;
