@@ -206,7 +206,7 @@ function onBuzz(pid,recv){
   if(G.locked.includes(p.team)||!teamsList().includes(p.team))return;
   const adj=recv-(G.mode==='net'&&G.comp?(p.rtt||0)/2:0);
   if(G.mode==='local'){commitBuzz(pid);return}
-  if(!pending){pending={c:[]};setTimeout(()=>{const best=pending.c.sort((a,b)=>a.adj-b.adj)[0];pending=null;if(G.phase==='reading'||G.phase==='open')commitBuzz(best.pid)},90)}
+  if(!pending){pending={c:[]};const win=Object.values(G.players).some(x=>x.online&&x.conn&&x.conn._relay)?260:90;setTimeout(()=>{const best=pending.c.sort((a,b)=>a.adj-b.adj)[0];pending=null;if(G.phase==='reading'||G.phase==='open')commitBuzz(best.pid)},win)}
   if(!pending.c.find(x=>x.pid===pid))pending.c.push({pid,adj});
 }
 function commitBuzz(pid){
@@ -439,16 +439,79 @@ function reportView(){saveSession();const rows=summaryRows([sessionRecord()]);co
   w.document.write(`<title>Session report</title><style>body{font:14px system-ui;padding:16px}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:4px 8px;text-align:left}th{background:#eef1f7}</style><h2>${esc(G.setLabel)}</h2><table>${rows.map((r,i)=>'<tr>'+r.map(c=>i?`<td>${esc(c)}</td>`:`<th>${esc(c)}</th>`).join('')+'</tr>').join('')}</table>`);w.document.close()}
 function openProjector(){window.open(location.pathname+location.search+'#projector','telraproj','width=1200,height=800')}
 
+// ---------- backup connection (MQTT over secure websocket) — used when the direct WebRTC link can't form (same wifi / blocked networks) ----------
+const RELAYS=new URLSearchParams(location.search).get('relayurl')?[new URLSearchParams(location.search).get('relayurl')]:['wss://test.mosquitto.org:8081/mqtt','wss://broker.emqx.io:8084/mqtt'];
+const RTOP='telraNSB-v1/';
+function mqttClient(url,onMsg,onUp,onDown){
+  const te=new TextEncoder(),td=new TextDecoder();let ws,buf=new Uint8Array(0),ka,pid=1,up=false;
+  const str=s=>{const b=te.encode(s);return [b.length>>8,b.length&255,...b]};
+  const len=n=>{const o=[];do{let d=n%128;n=Math.floor(n/128);if(n>0)d|=128;o.push(d)}while(n>0);return o};
+  const pkt=(h,body)=>new Uint8Array([h,...len(body.length),...body]);
+  const send=a=>{try{if(ws&&ws.readyState===1)ws.send(a)}catch(e){}};
+  try{ws=new WebSocket(url,['mqtt'])}catch(e){onDown&&onDown();return null}
+  ws.binaryType='arraybuffer';
+  ws.onopen=()=>send(pkt(0x10,[...str('MQTT'),4,2,0,60,...str('tn'+Math.random().toString(36).slice(2,12))]));
+  ws.onmessage=e=>{const n=new Uint8Array(e.data);const m=new Uint8Array(buf.length+n.length);m.set(buf);m.set(n,buf.length);buf=m;
+    for(;;){if(buf.length<2)break;let mul=1,rl=0,i=1,d;do{if(i>=buf.length)return;d=buf[i++];rl+=(d&127)*mul;mul*=128}while(d&128);
+      if(buf.length<i+rl)break;const p=buf.slice(i,i+rl),t=buf[0]>>4,q=(buf[0]>>1)&3;buf=buf.slice(i+rl);
+      if(t===2){if(p[1]===0){up=true;ka=setInterval(()=>send(new Uint8Array([0xC0,0])),25000);onUp&&onUp(c)}}
+      else if(t===3){const tl=(p[0]<<8)|p[1];const topic=td.decode(p.slice(2,2+tl));const off=2+tl+(q?2:0);let m;try{m=JSON.parse(td.decode(p.slice(off)))}catch(_){continue}onMsg(topic,m,c)}}};
+  ws.onclose=ws.onerror=()=>{clearInterval(ka);if(up||!c.dead){c.dead=true;up=false;onDown&&onDown(c)}};
+  const c={url,sub:t=>send(pkt(0x82,[pid>>8,pid++&255,...str(t),0])),pub:(t,m)=>send(pkt(0x30,[...str(t),...te.encode(JSON.stringify(m))])),close:()=>{c.dead=true;try{ws.close()}catch(e){}},get up(){return up}};
+  return c;
+}
+// host side: listens on every backup server; makes PeerJS-like connection objects
+function relayHost(code,onConn){
+  const conns={};
+  const mk=(cl,cid,key)=>{const h={};const k={_relay:true,open:true,last:Date.now(),
+    on:(ev,fn)=>{(h[ev]=h[ev]||[]).push(fn)},emit:(ev,x)=>(h[ev]||[]).forEach(f=>f(x)),
+    send:m=>cl.pub(RTOP+code+'/c/'+cid,m),close:()=>{if(!k.open)return;k.open=false;delete conns[key];k.emit('close')}};return k};
+  const start=url=>mqttClient(url,(topic,m,cl)=>{if(!m||!m.cid)return;const cid=String(m.cid).slice(0,40);const key=cid+'|'+cl.url;let k=conns[key];
+      if(!k||k.cl!==cl){if(m.d&&m.d.t==='bye')return;k=conns[key]=mk(cl,cid,key);k.cl=cl;onConn(k);k.send({t:'_ok'})}
+      k.last=Date.now();if(m.d&&m.d.t==='bye'){k.close();return}if(m.d&&m.d.t!=='ka')k.emit('data',m.d)},
+    cl=>cl.sub(RTOP+code+'/h'),()=>setTimeout(()=>start(url),3000));
+  RELAYS.forEach(start);
+  setInterval(()=>{const now=Date.now();for(const k of Object.values(conns))if(now-k.last>12000)k.close()},3000);
+}
+// player / co-coach side: first backup server that answers wins
+function relayJoin(code,onOpen,onFail){
+  const cid='r'+Math.random().toString(36).slice(2,10);const h={};let chosen=null,done=false,kat;
+  const k={_relay:true,open:false,on:(ev,fn)=>{(h[ev]=h[ev]||[]).push(fn)},emit:(ev,x)=>(h[ev]||[]).forEach(f=>f(x)),
+    send:m=>{if(chosen)chosen.pub(RTOP+code+'/h',{cid,d:m})},close:()=>{try{k.send({t:'bye'})}catch(e){}k.open=false;clearInterval(kat);clients.forEach(c=>c&&c.close())}};
+  const clients=RELAYS.map(url=>mqttClient(url,(topic,m,cl)=>{
+      if(!chosen&&m&&m.t==='_ok'){chosen=cl;k.open=true;done=true;clients.forEach(c=>{if(c&&c!==cl)c.close()});kat=setInterval(()=>k.send({t:'ka'}),3000);onOpen(k);return}
+      if(cl===chosen&&m&&m.t!=='_ok')k.emit('data',m)},
+    cl=>{cl.sub(RTOP+code+'/c/'+cid);setTimeout(()=>{if(!chosen)cl.pub(RTOP+code+'/h',{cid,d:{t:'ka'}})},300)},
+    cl=>{if(cl===chosen&&k.open){k.open=false;clearInterval(kat);k.emit('close')}}));
+  setTimeout(()=>{if(!done){done=true;clients.forEach(c=>c&&c.close());onFail&&onFail()}},12000);
+  addEventListener('pagehide',()=>{if(k.open)k.send({t:'bye'})});
+  return k;
+}
+
+// client: try the direct link first; if it hasn't opened in 6 s (same wifi, blocked network) switch to the backup connection
+function netJoin(code,o){
+  let peer=null,c=null,useRelay=new URLSearchParams(location.search).has('relay'),gen=0;
+  function bind(k,how){c=k;k.on('data',o.onData);k.on('close',()=>{if(c!==k)return;c=null;o.status('Disconnected — reconnecting…');setTimeout(start,1500)});o.onOpen(k,how)}
+  function relay(g){o.status('Connecting (backup line)…');relayJoin(code,k=>{if(g!==gen){k.close();return}useRelay=true;bind(k,'backup')},()=>{if(g!==gen)return;o.status('Can\'t reach room '+code+' — check the code with Coach. Retrying…');setTimeout(start,2000)})}
+  function start(){const g=++gen;try{peer&&peer.destroy()}catch(e){}peer=null;if(useRelay){relay(g);return}
+    let p;try{p=new Peer(undefined,peerOpts())}catch(e){relay(g);return}peer=p;
+    const fb=setTimeout(()=>{if(g===gen&&!c){try{p.destroy()}catch(e){}relay(g)}},6000);
+    p.on('open',()=>{const k=p.connect(PREFIX+code,{reliable:true});k.on('open',()=>{if(g!==gen||c)return;clearTimeout(fb);bind(k,'direct')})});
+    p.on('error',()=>{if(g!==gen||c)return;clearTimeout(fb);try{p.destroy()}catch(_){}relay(g)})}
+  start();return{get conn(){return c}};
+}
+
 // ---------- networking (host) ----------
 function startNetHost(){
   const code=Array.from({length:4},()=>'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random()*24)]).join('');
   const peer=new Peer(PREFIX+code,peerOpts());HOST=peer;
   const wt=setTimeout(()=>{if($('#code').textContent.includes('·'))$('#netwarn').innerHTML=`<div class="warnbox">Still not connected to the buzzer server after 10 s. This network may block it (school filter). Try another network or use One-laptop mode.</div>`},10000);
-  peer.on('open',()=>{clearTimeout(wt);$('#code').textContent=code;const link=location.href.split('#')[0]+'#join='+code;
-    $('#netwarn').innerHTML=location.protocol==='file:'?`<div class="warnbox">Room is live. You opened this from a file on this computer, so students can't use a link to it. To test here: open this same file in another browser or window, click Join, type <b>${code}</b>. For students, use the online (GitHub Pages) link.</div>`:(()=>{const colink=location.href.split('#')[0]+'#cohost='+code+'.'+COKEY;return `<div class="small mute">Student link: <b>${esc(link)}</b> <button onclick="navigator.clipboard.writeText('${esc(link)}')">Copy</button> &nbsp;·&nbsp; Co-coach link (or they use Join as co-coach with the room code + PIN — don't share with students): <button onclick="navigator.clipboard.writeText('${esc(colink)}')">Copy co-coach link</button> <span id="cocount"></span></div>`})()});
+  let shown=false;const showRoom=()=>{if(shown)return;shown=true;clearTimeout(wt);$('#code').textContent=code;const link=location.href.split('#')[0]+'#join='+code;
+    $('#netwarn').innerHTML=location.protocol==='file:'?`<div class="warnbox">Room is live. You opened this from a file on this computer, so students can't use a link to it. To test here: open this same file in another browser or window, click Join, type <b>${code}</b>. For students, use the online (GitHub Pages) link.</div>`:(()=>{const colink=location.href.split('#')[0]+'#cohost='+code+'.'+COKEY;return `<div class="small mute">Student link: <b>${esc(link)}</b> <button onclick="navigator.clipboard.writeText('${esc(link)}')">Copy</button> &nbsp;·&nbsp; Co-coach link (or they use Join as co-coach with the room code + PIN — don't share with students): <button onclick="navigator.clipboard.writeText('${esc(colink)}')">Copy co-coach link</button> <span id="cocount"></span></div>`})()};
+  peer.on('open',showRoom);
   peer.on('error',e=>{if(e.type==='unavailable-id'){peer.destroy();startNetHost();return}$('#netwarn').innerHTML=`<div class="warnbox">Connection problem: ${esc(e.type||e.message)}. If this keeps happening on school wifi, use One-laptop mode.</div>`});
   peer.on('disconnected',()=>{setTimeout(()=>{try{peer.reconnect()}catch(e){}},1000)});
-  peer.on('connection',conn=>{
+  const handleConn=conn=>{
     let pid=null;
     conn.on('data',m=>{
       const now=performance.now();
@@ -461,7 +524,9 @@ function startNetHost(){
         G.players[pid]={...(ex||{}),name,team:ex?ex.team:team,conn,online:true,rtt:ex?ex.rtt:0};autoSeat(pid);render()}
     });
     conn.on('close',()=>{if(conn._co){COS.delete(conn);const cc=$('#cocount');if(cc)cc.textContent=COS.size?`(${COS.size} co-coach${COS.size>1?'es':''} connected)`:'';return}if(pid&&G.players[pid]&&G.players[pid].conn===conn){G.players[pid].online=false;render()}});
-  });
+  };
+  peer.on('connection',handleConn);
+  relayHost(code,handleConn);setTimeout(showRoom,4000);
   setInterval(()=>{for(const p of Object.values(G.players)){if(p.conn&&p.conn.open)try{p.conn.send({t:'ping',s:performance.now()})}catch(e){}}},2000);
 }
 
@@ -504,16 +569,9 @@ function playerMain(code,pid,name,team){
   let lastB='';function sBuzzOnce(k){if(k!==lastB){lastB=k;sBuzz();if(navigator.vibrate)navigator.vibrate(120)}}
   setInterval(()=>{if(!S)return;const r=remEnd?Math.max(0,remEnd-performance.now()):0;$('#ptimer').textContent=remEnd?(r/1000).toFixed(1):'–';$('#ptimer').style.color=remEnd&&r<2000?'var(--bad)':''},100);
   let slow=setTimeout(()=>{if(!conn||!conn.open)$('#conn').textContent='Still connecting… check the room code with Coach, or try another network.'},10000);
-  function connect(){
-    peer=new Peer(undefined,peerOpts());
-    peer.on('open',()=>{conn=peer.connect(PREFIX+code,{reliable:true});
-      conn.on('open',()=>{$('#conn').textContent='Connected · room '+code;conn.send({t:'hello',pid,name,team})});
-      conn.on('data',m=>{if(m.t==='ping'){conn.send({t:'pong',s:m.s});return}if(m.t==='state'){S=m;remEnd=m.rem>0?performance.now()+m.rem:0;draw()}});
-      conn.on('close',()=>{$('#conn').textContent='Disconnected — reconnecting…';setTimeout(()=>{peer.destroy();connect()},1500)});
-    });
-    peer.on('error',e=>{$('#conn').textContent=(e.type==='peer-unavailable'?'Room '+code+' not found — check the code':'Connection error: '+e.type);if(e.type!=='peer-unavailable')setTimeout(()=>{peer.destroy();connect()},3000)});
-  }
-  connect();
+  const NJ=netJoin(code,{status:t=>{$('#conn').textContent=t},
+    onOpen:(k,how)=>{conn=k;$('#conn').textContent='Connected · room '+code+(how==='backup'?' (backup line)':'');k.send({t:'hello',pid,name,team})},
+    onData:m=>{if(m.t==='ping'){conn&&conn.send({t:'pong',s:m.s});return}if(m.t==='state'){S=m;remEnd=m.rem>0?performance.now()+m.rem:0;draw()}}});
 }
 
 // ================= CO-COACH =================
@@ -549,17 +607,10 @@ function cohostView(arg){
   setInterval(()=>{if(!S)return;const r=remEnd?Math.max(0,remEnd-performance.now()):0;$('#timer').textContent=remEnd?(r/1000).toFixed(1):(S.timeUp?'0.0':'–');$('#timer').style.color=remEnd&&r<2000?'var(--bad)':'';
     const left=S.clock.running?Math.max(0,S.clock.left-(performance.now()-clockAt)):S.clock.left;$('#clock').textContent=fmtClock(left)},100);
   setTimeout(()=>{if(!conn||!conn.open)$('#conn').textContent='Still connecting… make sure the coach has the room open, or try another network.'},10000);
-  function connect(){
-    peer=new Peer(undefined,peerOpts());
-    peer.on('open',()=>{conn=peer.connect(PREFIX+code,{reliable:true});
-      conn.on('open',()=>{$('#conn').textContent='Connected as co-coach · room '+code;conn.send({t:'cohost',key})});
-      conn.on('data',m=>{if(m.t==='denied'){$('#conn').textContent='This co-coach link is not valid for this room. Ask the coach for a fresh link.';return}
-        if(m.t==='co'){S=m;remEnd=m.rem>0?performance.now()+m.rem:0;clockAt=performance.now();draw()}});
-      conn.on('close',()=>{$('#conn').textContent='Disconnected — reconnecting…';setTimeout(()=>{peer.destroy();connect()},1500)});
-    });
-    peer.on('error',e=>{$('#conn').textContent=(e.type==='peer-unavailable'?'Room '+code+' not found — is the coach hosting right now?':'Connection error: '+e.type);if(e.type!=='peer-unavailable')setTimeout(()=>{peer.destroy();connect()},3000)});
-  }
-  connect();
+  netJoin(code,{status:t=>{$('#conn').textContent=t},
+    onOpen:(k,how)=>{conn=k;$('#conn').textContent='Connected as co-coach · room '+code+(how==='backup'?' (backup line)':'');k.send({t:'cohost',key})},
+    onData:m=>{if(m.t==='denied'){$('#conn').textContent='This co-coach link is not valid for this room. Ask the coach for a fresh link.';return}
+        if(m.t==='co'){S=m;remEnd=m.rem>0?performance.now()+m.rem:0;clockAt=performance.now();draw()}}});
 }
 
 // ================= PROJECTOR =================
