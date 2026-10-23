@@ -77,6 +77,7 @@ td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left}
 .solo-q{font-size:24px;line-height:1.5;min-height:180px}
 .gen label{display:inline-flex;gap:4px;align-items:center;margin-right:10px}
 .warnbox{border:1px solid var(--warn);background:#2e2408;border-radius:10px;padding:8px 10px;font-size:14px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:50;overflow:auto;padding:0 16px}
 </style>
 </head>
 <body>
@@ -122,6 +123,7 @@ function route(){
   if(h.startsWith('#cohost'))return cohostView(h.split('=')[1]||'');
   if(h==='#host')return hostSetup('net');
   if(h==='#local')return hostSetup('local');
+  if(h==='#bracket')return bracketSetup();
   if(h==='#solo')return soloView();
   if(h==='#sprint')return sprintView();
   homeView();
@@ -141,6 +143,7 @@ function homeView(){
       <button class="bigbtn" id="cb">Join as co-coach</button></div>
     <div class="card"><h2>Coach · Online room</h2><p>Students buzz from their own laptop/phone (Mon/Wed online, or Fridays in person on devices).</p><button class="primary" onclick="location.hash='host'">Host a room</button></div>
     <div class="card"><h2>Coach · One-laptop mode</h2><p>No internet needed. Players buzz on keys <kbd>1</kbd>–<kbd>5</kbd> (Team A) and <kbd>6</kbd>–<kbd>0</kbd> (Team B). Plug in a second USB keyboard for Team B.</p><button onclick="location.hash='local'">Start one-laptop game</button></div>
+    <div class="card"><h2>Coach · Bracket match (physical buzzers)</h2><p>Semifinal → final. 4 v 4 on buzzers <kbd>1</kbd>–<kbd>8</kbd>, 1 sub per team who comes on at half time. The best team of the week waits in the final.</p><button onclick="location.hash='bracket'">Set up bracket match</button></div>
     <div class="card"><h2>Topic sprint (home)</h2><p>This week's topic for your subject group. Same question pool for every player on Teams A, B and C. The question is read out word by word, then you get 5 seconds.</p><button class="primary" onclick="location.hash='sprint'">Start a sprint</button></div>
     <div class="card"><h2>Solo practice (home)</h2><p>Questions appear word by word like they're being read. Buzz with <kbd>Space</kbd>, check your answer, track what you miss.</p><button onclick="location.hash='solo'">Practice alone</button></div>
   </div>`;
@@ -158,7 +161,7 @@ function newGame(opts){
     bonusTeam:null,timerEnd:0,timerLen:0,timeUp:false,clock:{half:1,left:8*60*1000,running:false,last:0},hist:[],log:[],comp:true,readHalf:null};
 }
 let G=null, HOST=null, COS=new Set(), COKEY=String(1000+Math.floor(Math.random()*9000));
-const teamsList=()=>TEAM_KEYS.slice(0,G.nTeams);
+const teamsList=()=>G.tk||TEAM_KEYS.slice(0,G.nTeams);
 function mixPairs(pairs){const order=['Life Science','Earth Science','Chemistry','Physics','Math','Energy','General Science'];const g={};
   pairs.forEach(p=>{const k=subjOf(p.tu)||'General Science';(g[k]=g[k]||[]).push(p)});
   for(const k in g){const a=g[k];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}}
@@ -329,6 +332,74 @@ function generate(cats,t1,t2,n){
   ls('telra-used',[...usedLocal,...out.flatMap(p=>[p.tu,p.b])]);return out;
 }
 
+
+// ================= BRACKET (physical buzzers) =================
+function bk(){const b=ls('telra-bracket')||{};const today=new Date().toISOString().slice(0,10);return b.date===today?b:{date:today,finalist:'C',semi:null}}
+function bracketSetup(){
+  const B=bk();const stage=B.semi&&B.semi.winner?'final':'semi';
+  const setOpts=SETS.map((x,i)=>`<option value="${i}">${esc(x.label)} (${x.pairs.length})</option>`).join('')+'<option value="paper">Paper packet — I read from paper</option>';
+  app.innerHTML=`<h1>Bracket match · physical buzzers</h1>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+   <div class="card"><h2>Bracket</h2>
+     <div class="row">Finalist (best team this week) <select id="bf">${TEAM_KEYS.map(t=>`<option ${B.finalist===t?'selected':''}>${t}</option>`).join('')}</select></div>
+     <div class="row" style="margin-top:8px">Match <select id="bs"><option value="semi">Semifinal</option><option value="final">Final</option></select></div>
+     <div id="bview" class="small" style="margin-top:10px"></div>
+     <div class="row" style="margin-top:8px">Half length <select id="bh"><option value="5">5 min</option><option value="6" selected>6 min</option><option value="7">7 min</option><option value="8">8 min (regionals)</option></select></div>
+     <h2 style="margin-top:14px">Question set</h2><select id="bq" style="width:100%">${setOpts}</select>
+     <label class="small row" style="margin-top:6px"><input type="checkbox" id="bmix"> Mix subjects evenly</label>
+     <p class="small mute">Use a different set for the final than the semifinal.</p>
+   </div>
+   <div class="card" id="bt0"></div><div class="card" id="bt1"></div>
+  </div>
+  <div class="row" style="margin-top:14px"><button class="primary bigbtn" id="bgo">Start match</button><button onclick="if(confirm('Clear today\\'s bracket results?')){ls('telra-bracket',null);bracketSetup()}">Reset bracket</button><button onclick="location.hash=''">Back</button></div>`;
+  $('#bs').value=stage;
+  const pickSet=()=>{const today=new Date().toISOString().slice(0,10);let i=SETS.findIndex(x=>x.id>=today);if(i<0)i=0;
+    if($('#bs').value==='final'){const used=B.semi&&B.semi.set;let j=SETS.findIndex(x=>String(x.id).startsWith('real-')&&x.label!==used&&!(ls('telra-usedsets')||[]).includes(x.id));if(j>=0)i=j}
+    $('#bq').value=i;$('#bmix').checked=!(SETS[i]&&SETS[i].kind==='real')};
+  const teams=()=>{const f=$('#bf').value,others=TEAM_KEYS.filter(t=>t!==f);
+    if($('#bs').value==='semi')return others;const w=B.semi&&B.semi.winner;return [w||others[0],f]};
+  const draw=()=>{const f=$('#bf').value,o=TEAM_KEYS.filter(t=>t!==f);const sw=B.semi&&B.semi.winner;
+    $('#bview').innerHTML=`<div>Semifinal: <b class="c${o[0]}">Team ${o[0]}</b> vs <b class="c${o[1]}">Team ${o[1]}</b>${B.semi&&B.semi.score?` → ${esc(B.semi.score)}`:''}</div><div>Final: <b>${sw?`<span class="c${sw}">Team ${sw}</span>`:'semifinal winner'}</b> vs <b class="c${f}">Team ${f}</b>${B.final&&B.final.score?` → ${esc(B.final.score)}`:''}</div>${B.champion?`<div style="margin-top:6px">🏆 Champion: <b class="c${B.champion}">Team ${B.champion}</b></div>`:''}`;
+    const [t0,t1]=teams();[t0,t1].forEach((t,ti)=>{const mine=ROSTER.filter(n=>TEAMOF[n]===t),rest=ROSTER.filter(n=>TEAMOF[n]!==t);
+      const opt=sel=>`<option value="">— empty —</option>`+mine.map(n=>`<option ${n===sel?'selected':''}>${esc(n)}</option>`).join('')+`<optgroup label="Other teams">${rest.map(n=>`<option>${esc(n)}</option>`).join('')}</optgroup>`;
+      const rows=['Captain','1','2','3','sub'].map((st,i)=>{const key=st==='sub'?'':String(ti*4+i+1);return `<div class="row" style="margin:4px 0;flex-wrap:nowrap">${key?`<kbd>${key}</kbd>`:'<span class="small mute" style="width:22px">—</span>'}<span class="seat c${t}" style="width:96px;flex:none;white-space:nowrap">${st==='sub'?'Sub':seatLabel(t,st)}</span><select data-t="${t}" data-st="${st}" data-k="${key}" style="flex:1;min-width:0">${opt(mine[i]||'')}</select></div>`}).join('');
+      $('#bt'+ti).innerHTML=`<h2 class="c${t}">Team ${t} · buzzers ${ti*4+1}–${ti*4+4}</h2>${rows}<p class="small mute">The sub comes on at half time for whoever you pick then.</p>`})};
+  $('#bf').onchange=()=>{B.finalist=$('#bf').value;draw()};$('#bs').onchange=()=>{pickSet();draw()};$('#bq').onchange=()=>{const v=$('#bq').value;$('#bmix').checked=!(SETS[v]&&SETS[v].kind==='real')};
+  pickSet();draw();
+  $('#bgo').onclick=()=>{const [t0,t1]=teams();if(t0===t1){alert('Pick two different teams');return}
+    const sels=[...document.querySelectorAll('#bt0 select,#bt1 select')];const names=sels.map(x=>x.value).filter(Boolean);
+    if(new Set(names).size!==names.length){alert('Someone is listed twice.');return}
+    const v=$('#bq').value;let pairs=[],paper=false,label;if(v==='paper'){paper=true;label='Paper packet'}else{pairs=SETS[v].pairs;label=SETS[v].label}
+    if($('#bmix').checked&&!paper)pairs=mixPairs(pairs);
+    const stg=$('#bs').value;label=(stg==='semi'?'Semifinal':'Final')+` · Team ${t0} vs Team ${t1} · `+label;
+    const nm={A:'Team A',B:'Team B',C:'Team C'};
+    G=newGame({mode:'local',nTeams:3,names:[nm.A,nm.B,nm.C],pairs,paper,setLabel:label});G.tk=[t0,t1];
+    G.halfMs=+$('#bh').value*60000;G.clock.left=G.halfMs;G.bracket={stage:stg,set:v==='paper'?'paper':SETS[v].label,setId:v==='paper'?'':SETS[v].id};
+    sels.forEach(x=>{if(!x.value)return;const t=x.dataset.t;if(x.dataset.st==='sub')G.players['s'+t]={name:x.value,team:t,rtt:0,online:true,seat:'',bench:true};else G.players['k'+x.dataset.k]={name:x.value,team:t,rtt:0,online:true,seat:x.dataset.st}});
+    B.finalist=$('#bf').value;ls('telra-bracket',B);hostMain()};
+}
+function subDialog(){
+  const box=document.createElement('div');box.className='overlay';
+  const rows=G.tk.map(t=>{const sub=G.players['s'+t];const on=Object.entries(G.players).filter(([k,p])=>k[0]==='k'&&p.team===t);
+    if(!sub)return `<p class="small mute">Team ${t}: no sub.</p>`;
+    const def=(on.find(([,p])=>p.seat==='3')||on[on.length-1]||[])[0];
+    return `<div class="row" style="margin:8px 0"><b class="c${t}">Team ${t}</b>: ${esc(sub.name)} comes in for <select data-t="${t}"><option value="">nobody (no change)</option>${on.map(([k,p])=>`<option value="${k}" ${k===def?'selected':''}>${esc(seatLabel(t,p.seat))} · ${esc(p.name)} (buzzer ${k.slice(1)})</option>`).join('')}</select></div>`}).join('');
+  box.innerHTML=`<div class="card" style="max-width:560px;margin:10vh auto"><h2>Half time · substitutions</h2><p class="small mute">The sub takes that player's buzzer and position. Hand the buzzer over now.</p>${rows}<div class="row" style="margin-top:12px"><button class="primary" id="sgo">Start 2nd half</button><button id="sx">Cancel</button></div></div>`;
+  document.body.appendChild(box);
+  box.querySelector('#sx').onclick=()=>box.remove();
+  box.querySelector('#sgo').onclick=()=>{snapshot();box.querySelectorAll('select').forEach(sel=>{const k=sel.value,t=sel.dataset.t;if(!k)return;const out=G.players[k],inn=G.players['s'+t];
+      inn.seat=out.seat;inn.bench=false;out.seat='';out.bench=true;G.players[k]=inn;G.players['s'+t]=out;G.subs=(G.subs||[]).concat({t,in:inn.name,out:out.name})});
+    box.remove();G.clock={half:2,left:(G.halfMs||8*60*1000),running:false,last:0};render()};
+}
+function finishMatch(){const [a,b]=G.tk,sa=G.teams[a].score,sb=G.teams[b].score;
+  if(sa===sb){alert(`Tied ${sa}–${sb}. NSB rule: play one more toss-up (sudden death). Read the next toss-up, then press Finish match again.`);return}
+  const w=sa>sb?a:b;saveSession();const B=bk();const score=`Team ${a} ${sa} – ${sb} Team ${b}`;
+  if(G.bracket.stage==='semi')B.semi={teams:[a,b],winner:w,score,set:G.bracket.set};else{B.final={teams:[a,b],winner:w,score};B.champion=w}
+  if(G.bracket.setId)ls('telra-usedsets',[...(ls('telra-usedsets')||[]),G.bracket.setId]);
+  ls('telra-bracket',B);
+  if(confirm(`${G.bracket.stage==='semi'?'Semifinal':'Final'}: Team ${w} wins, ${score}.\n\nDownload this match's report now?`))exportCSV();
+  location.hash='bracket';route()}
+
 // ================= HOST MAIN =================
 function hostMain(){
   app.innerHTML=`
@@ -353,7 +424,7 @@ function hostMain(){
     </div>
     <div class="grid" style="align-content:start">
       <div class="card"><div class="timer" id="timer">–</div>${'<div id="scores"></div>'}
-        <div class="row" style="justify-content:center;margin-top:10px"><span class="mute small">Half <b id="half">1</b> · clock</span><b id="clock" style="font-family:ui-monospace,monospace;font-size:20px">8:00</b><button onclick="toggleClock()"><kbd>T</kbd> start/pause</button><button onclick="nextHalf()">Next half</button></div></div>
+        <div class="row" style="justify-content:center;margin-top:10px"><span class="mute small">Half <b id="half">1</b> · clock</span><b id="clock" style="font-family:ui-monospace,monospace;font-size:20px">8:00</b><button onclick="toggleClock()"><kbd>T</kbd> start/pause</button><button onclick="nextHalf()">${G.bracket?'Half time · subs':'Next half'}</button>${G.bracket?'<button class="primary" onclick="finishMatch()">Finish match</button>':''}</div></div>
       <div class="card"><h2>Players <span id="pc"></span></h2><div class="players" id="players"></div></div>
       <div class="card"><h2>Keys</h2><div class="keys">
         <kbd>Space</kbd><span>Start reading → start 5 s timer → next question (bonus: start 20 s)</span>
@@ -380,7 +451,7 @@ function hostMain(){
   render();
 }
 function toggleClock(){const c=G.clock;c.running=!c.running;c.last=performance.now();render()}
-function nextHalf(){G.clock={half:2,left:8*60*1000,running:false,last:0};render()}
+function nextHalf(){if(G.bracket&&G.clock.half===1){subDialog();return}G.clock={half:2,left:(G.halfMs||8*60*1000),running:false,last:0};render()}
 function render(){
   if(!G||!$('#status'))return;
   $('#status').innerHTML=statusHtml(false);
@@ -394,7 +465,7 @@ function render(){
   $('#qbox').innerHTML=h;
   $('#scores').innerHTML=scoresHtml();
   const pl=Object.entries(G.players);$('#pc').textContent=`(${pl.filter(([,p])=>p.online).length})`;
-  const so=x=>SEATS.indexOf(x.seat||'')<0?9:SEATS.indexOf(x.seat);$('#players').innerHTML=pl.sort((a,b)=>a[1].team.localeCompare(b[1].team)||so(a[1])-so(b[1])||a[1].name.localeCompare(b[1].name)).map(([id,p])=>{const s=p.s||{};return `<div class="pl ${p.online?'':'off'}"><span><button class="tb c${p.team}" onclick="cycleTeam('${id}')" title="Change team">${p.team}</button> <select class="seatsel" title="Position" onchange="setSeat('${id}',this.value)">${['',...SEATS].map(x=>`<option value="${x}" ${(p.seat||'')===x?'selected':''}>${x?seatLabel(p.team,x):'–'}</option>`).join('')}</select> ${esc(p.name)}${G.mode==='local'?` <kbd>${id.slice(1)}</kbd>`:''}</span><span class="mute small">${s.c||0}✓ ${s.w||0}✗${s.iw?` (${s.iw} int)`:''}${G.mode==='net'?` · ${p.online?Math.round(p.rtt||0)+'ms':'offline'}`:''}</span></div>`}).join('')||'<p class="mute small">Waiting for players…</p>';
+  const so=x=>SEATS.indexOf(x.seat||'')<0?9:SEATS.indexOf(x.seat);$('#players').innerHTML=pl.sort((a,b)=>a[1].team.localeCompare(b[1].team)||so(a[1])-so(b[1])||a[1].name.localeCompare(b[1].name)).map(([id,p])=>{const s=p.s||{};return `<div class="pl ${p.online?'':'off'}"><span><button class="tb c${p.team}" onclick="cycleTeam('${id}')" title="Change team">${p.team}</button> <select class="seatsel" title="Position" onchange="setSeat('${id}',this.value)">${['',...SEATS].map(x=>`<option value="${x}" ${(p.seat||'')===x?'selected':''}>${x?seatLabel(p.team,x):'–'}</option>`).join('')}</select> ${esc(p.name)}${G.mode==='local'?(id[0]==='s'?' <span class="mute small">(sub · on the bench)</span>':` <kbd>${id.slice(1)}</kbd>`):''}</span><span class="mute small">${s.c||0}✓ ${s.w||0}✗${s.iw?` (${s.iw} int)`:''}${G.mode==='net'?` · ${p.online?Math.round(p.rtt||0)+'ms':'offline'}`:''}</span></div>`}).join('')||'<p class="mute small">Waiting for players…</p>';
   renderTimersOnly();broadcast();saveSession();
 }
 function renderTimersOnly(){
