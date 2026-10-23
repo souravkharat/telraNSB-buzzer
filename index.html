@@ -391,6 +391,7 @@ function subDialog(){
       inn.seat=out.seat;inn.bench=false;out.seat='';out.bench=true;G.players[k]=inn;G.players['s'+t]=out;G.subs=(G.subs||[]).concat({t,in:inn.name,out:out.name})});
     box.remove();G.clock={half:2,left:(G.halfMs||8*60*1000),running:false,last:0};render()};
 }
+function clickBuzz(k){if(!G)return;if(G.phase==='ready')G.phase='open';onBuzz(k,performance.now());document.activeElement&&document.activeElement.blur()}
 function finishMatch(){const [a,b]=G.tk,sa=G.teams[a].score,sb=G.teams[b].score;
   if(sa===sb){alert(`Tied ${sa}–${sb}. NSB rule: play one more toss-up (sudden death). Read the next toss-up, then press Finish match again.`);return}
   const w=sa>sb?a:b;saveSession();const B=bk();const score=`Team ${a} ${sa} – ${sb} Team ${b}`;
@@ -412,6 +413,7 @@ function hostMain(){
   <div class="grid host">
     <div class="grid" style="align-content:start">
       <div id="status"></div>
+      <div id="whob"></div>
       <div class="card qbox" id="qbox"></div>
       <div class="row">
         <button class="bigbtn primary" onclick="advance()"><kbd>Space</kbd> Next step</button>
@@ -444,7 +446,7 @@ function hostMain(){
   if(G.mode==='net'){const c=$('#comp');c.onchange=()=>{G.comp=c.checked;c.blur()};startNetHost()}
   document.onkeydown=e=>{
     if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
-    if(G.mode==='local'&&/^[0-9]$/.test(e.key)){if(!e.repeat)onBuzz('k'+e.key,performance.now());e.preventDefault();return}
+    if(G.mode==='local'&&/^[0-9]$/.test(e.key)){if(!e.repeat&&G.players['k'+e.key])clickBuzz('k'+e.key);e.preventDefault();return}
     const k=e.key.toLowerCase();
     if(k===' '){e.preventDefault();advance()}else if(k==='c')judge('c');else if(k==='w')judge('w');else if(k==='p')judge('p');else if(k==='u')undo();else if(k==='n')skip();else if(k==='t')toggleClock();else if(k==='i')flipInt();
   };
@@ -463,6 +465,8 @@ function render(){
     <div class="qtext">${esc(q.question)}</div>${q.type==='MC'?`<ul class="choices">${Object.entries(q.choices).map(([k,v])=>`<li><b>${k})</b> ${esc(v)}</li>`).join('')}</ul>`:''}
     <div class="ans">ANSWER: ${esc(q.answer)}</div>`}
   $('#qbox').innerHTML=h;
+  const wb=$('#whob');if(wb){if(G.mode!=='local'||G.part!=='tu'||G.phase==='end')wb.innerHTML='';else{const can=['ready','reading','open'].includes(G.phase);
+    wb.innerHTML=`<div class="card" style="padding:10px 12px"><div class="small mute" style="margin-bottom:6px">WHO BUZZED? Click the player whose buzzer lit up (or press their number)</div>${teamsList().map(t=>`<div class="row" style="margin:4px 0;gap:6px">${Object.entries(G.players).filter(([k,p])=>k[0]==='k'&&p.team===t).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,p])=>`<button class="c${t}" style="flex:1;min-width:120px" ${!can||G.locked.includes(t)?'disabled':''} onclick="clickBuzz('${k}')"><kbd>${k.slice(1)}</kbd> ${esc(seatLabel(t,p.seat))} · ${esc(p.name.split(' ')[0])}</button>`).join('')}</div>`).join('')}</div>`}}
   $('#scores').innerHTML=scoresHtml();
   const pl=Object.entries(G.players);$('#pc').textContent=`(${pl.filter(([,p])=>p.online).length})`;
   const so=x=>SEATS.indexOf(x.seat||'')<0?9:SEATS.indexOf(x.seat);$('#players').innerHTML=pl.sort((a,b)=>a[1].team.localeCompare(b[1].team)||so(a[1])-so(b[1])||a[1].name.localeCompare(b[1].name)).map(([id,p])=>{const s=p.s||{};return `<div class="pl ${p.online?'':'off'}"><span><button class="tb c${p.team}" onclick="cycleTeam('${id}')" title="Change team">${p.team}</button> <select class="seatsel" title="Position" onchange="setSeat('${id}',this.value)">${['',...SEATS].map(x=>`<option value="${x}" ${(p.seat||'')===x?'selected':''}>${x?seatLabel(p.team,x):'–'}</option>`).join('')}</select> ${esc(p.name)}${G.mode==='local'?(id[0]==='s'?' <span class="mute small">(sub · on the bench)</span>':` <kbd>${id.slice(1)}</kbd>`):''}</span><span class="mute small">${s.c||0}✓ ${s.w||0}✗${s.iw?` (${s.iw} int)`:''}${G.mode==='net'?` · ${p.online?Math.round(p.rtt||0)+'ms':'offline'}`:''}</span></div>`}).join('')||'<p class="mute small">Waiting for players…</p>';
