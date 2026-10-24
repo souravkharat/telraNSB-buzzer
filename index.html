@@ -190,7 +190,7 @@ function stopTimer(){G.timerEnd=0}
 
 // ---------- auto-read (text to speech) ----------
 function tuMs(){const v=+ls('telra-tutime');return (v>0?v:5)*1000}
-function arOn(){return !!ls('telra-autoread')}
+function arOn(){const v=ls('telra-autoread');return v===null||v===undefined?true:!!v}
 function arRate(){const v=+ls('telra-arrate');return v>0?v:0.85}
 const ELEM=new Set('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pt Au Hg Tl Pb Bi Po At Rn Fr Ra U Pu'.split(' '));
 function speakable(t){
@@ -218,12 +218,14 @@ function questionScript(q,kind,n){const subj=q.category||'';const mc=q.type==='M
   let s=`${kind} ${n}. ${subj}. ${mc?'Multiple choice.':'Short answer.'} ${speakable(q.question)}`;
   if(mc&&q.choices)s+=' '+Object.entries(q.choices).map(([k,v])=>`${k}: ${speakable(v)}.`).join(' ');return s}
 let RD={gen:0};
-function pickVoice(){const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));const want=ls('telra-arvoice');if(want){const v=vs.find(x=>x.name===want);if(v)return v}
-  return vs.find(v=>/natural/i.test(v.name)&&/en-US/i.test(v.lang))||vs.find(v=>/Google US English/i.test(v.name))||vs.find(v=>/(Aria|Jenny|Samantha|Zira)/i.test(v.name))||vs.find(v=>/en-US/i.test(v.lang))||vs[0]}
+function pickVoice(){let vs=[];try{vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang))}catch(e){}const want=ls('telra-arvoice');if(want){const v=vs.find(x=>x.name===want);if(v)return v}
+  // default: a voice installed on this computer (online Google voices can fail silently on school wifi)
+  const loc=vs.filter(v=>v.localService);
+  return loc.find(v=>/en-US/i.test(v.lang)&&/(Aria|Jenny|Guy|Natural|Samantha|Zira|David|Mark)/i.test(v.name))||loc.find(v=>/en-US/i.test(v.lang))||loc[0]||null}
 function readAloud(text,onEnd){stopReading();const g=++RD.gen;try{
-  const chunks=text.match(/[^.?!;:]+[.?!;:]*/g)||[text];const v=pickVoice();let i=0;
-  const next=()=>{if(g!==RD.gen)return;if(i>=chunks.length){RD.on=false;onEnd&&onEnd();return}const txt=chunks[i++].trim();const u=new SpeechSynthesisUtterance(txt);if(v)u.voice=v;u.rate=arRate();let done=false;const fin=()=>{if(done)return;done=true;setTimeout(next,120)};const guard=setTimeout(fin,2000+txt.split(/\s+/).length*800/arRate());u.onend=()=>{clearTimeout(guard);fin()};u.onerror=()=>{if(g===RD.gen){RD.on=false}};speechSynthesis.speak(u)};
-  RD.on=true;next()}catch(e){RD.on=false;onEnd&&onEnd()}}
+  const chunks=text.match(/[^.?!;:]+[.?!;:]*/g)||[text];let v=pickVoice();let i=0;
+  const next=()=>{if(g!==RD.gen)return;if(i>=chunks.length){RD.on=false;onEnd&&onEnd();return}const txt=chunks[i++].trim();const u=new SpeechSynthesisUtterance(txt);if(v)u.voice=v;u.rate=arRate();let done=false;const fin=()=>{if(done)return;done=true;setTimeout(next,120)};const guard=setTimeout(fin,2000+txt.split(/\s+/).length*800/arRate());u.onend=()=>{clearTimeout(guard);fin()};u.onerror=e=>{if(g!==RD.gen)return;clearTimeout(guard);if(v&&!/interrupt|cancel/i.test(e&&e.error||'')){v=null;i--;done=true;setTimeout(next,80)}else fin()};try{speechSynthesis.resume()}catch(e){}speechSynthesis.speak(u)};
+  RD.on=true;setTimeout(next,80)}catch(e){RD.on=false;onEnd&&onEnd()}}
 function stopReading(){RD.gen++;RD.on=false;try{speechSynthesis.cancel()}catch(e){}}
 function autoReadTU(){if(!arOn()||G.paper)return;const q=curQ();if(!q)return;const qi=G.qi;readAloud(questionScript(q,'Toss-up',G.qi+1),()=>{if(G&&G.qi===qi&&G.phase==='reading'&&G.part==='tu')advance()})}
 function autoReadBonus(){if(!arOn()||G.paper)return;const q=curQ();if(!q)return;const qi=G.qi;readAloud(questionScript(q,'Bonus',G.qi+1),()=>{if(G&&G.qi===qi&&G.phase==='bonus_ready')advance()})}
@@ -492,7 +494,7 @@ function hostMain(){
   $('#ar').onchange=e=>{ls('telra-autoread',e.target.checked);if(!e.target.checked)stopReading();e.target.blur()};
   $('#arr').onchange=e=>{ls('telra-arrate',+e.target.value);e.target.blur()};
   $('#tut').onchange=e=>{ls('telra-tutime',+e.target.value);e.target.blur()};
-  const fillV=()=>{const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));const cur=(pickVoice()||{}).name;$('#arv').innerHTML=vs.map(v=>`<option ${v.name===cur?'selected':''}>${esc(v.name)}</option>`).join('')||'<option>(default)</option>'};
+  const fillV=()=>{const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));const cur=(pickVoice()||{}).name;$('#arv').innerHTML=`<option value="">Computer default</option>`+vs.map(v=>`<option value="${esc(v.name)}" ${v.name===cur?'selected':''}>${esc(v.name)}${v.localService?'':' (online)'}</option>`).join('')};
   try{fillV();speechSynthesis.onvoiceschanged=fillV}catch(e){}
   $('#arv').onchange=e=>{ls('telra-arvoice',e.target.value);e.target.blur()};
   $('#artest').onclick=e=>{e.target.blur();readAloud(questionScript({category:'Chemistry',type:'MC',question:'What is the chemical formula for ferric oxide, and what is the oxidation number of iron in Fe 2 O 3?',choices:{W:'plus 1',X:'plus 2',Y:'plus 3',Z:'negative 2'}},'Toss-up',1))};
