@@ -169,7 +169,7 @@ function mixPairs(pairs){const order=['Life Science','Earth Science','Chemistry'
   const out=[];while(ks.some(k=>g[k].length))ks.forEach(k=>{if(g[k].length)out.push(g[k].shift())});return out}
 function curQ(){if(G.paper||!G.pairs[G.qi])return null;const p=G.pairs[G.qi];return QBY[G.part==='tu'?p.tu:p.b]}
 function snapshot(){G.hist.push(JSON.stringify({teams:G.teams,players:Object.fromEntries(Object.entries(G.players).map(([k,p])=>[k,{...p,conn:undefined}])),qi:G.qi,part:G.part,phase:G.phase,locked:G.locked,buzz:G.buzz,bonusTeam:G.bonusTeam,log:G.log}));if(G.hist.length>60)G.hist.shift()}
-function undo(){const s=G.hist.pop();if(!s)return;const o=JSON.parse(s);for(const k in o.players){if(G.players[k]){const conn=G.players[k].conn;G.players[k]={...o.players[k],conn}}}Object.assign(G,{teams:o.teams,qi:o.qi,part:o.part,phase:o.phase,locked:o.locked,buzz:o.buzz,bonusTeam:o.bonusTeam,log:o.log});stopTimer();G.timeUp=false;if(G.phase==='open'||G.phase==='bonus_timer')G.phase=G.phase==='open'?'reading':'bonus_ready';render()}
+function undo(){const s=G.hist.pop();if(!s)return;stopReading();const o=JSON.parse(s);for(const k in o.players){if(G.players[k]){const conn=G.players[k].conn;G.players[k]={...o.players[k],conn}}}Object.assign(G,{teams:o.teams,qi:o.qi,part:o.part,phase:o.phase,locked:o.locked,buzz:o.buzz,bonusTeam:o.bonusTeam,log:o.log});stopTimer();G.timeUp=false;if(G.phase==='open'||G.phase==='bonus_timer')G.phase=G.phase==='open'?'reading':'bonus_ready';render()}
 function ev(k,extra){const p=G.pairs[G.qi];const id=G.paper?'':(p?(G.part==='tu'?p.tu:p.b):'');const q=QBY[id]||{};
   G.log.push(Object.assign({ts:new Date().toISOString(),qi:G.qi,qn:G.qi+1,part:G.part==='tu'?'Toss-up':'Bonus',qid:id,subj:subjOf(id),cat:q.category||'',k},extra||{}))}
 function stat(pid){const p=G.players[pid];if(!p.s)p.s={buzz:0,c:0,w:0,ic:0,iw:0,pen:0};return p.s}
@@ -187,16 +187,58 @@ function intPenOn(){return !!ls('telra-intpen')}
 function voiceOn(){const v=ls('telra-voice');return v===null?true:!!v}
 function say(txt){if(!voiceOn())return;try{const u=new SpeechSynthesisUtterance(txt);u.rate=1.05;speechSynthesis.cancel();speechSynthesis.speak(u)}catch(e){}}
 function stopTimer(){G.timerEnd=0}
+
+// ---------- auto-read (text to speech) ----------
+function tuMs(){const v=+ls('telra-tutime');return (v>0?v:5)*1000}
+function arOn(){return !!ls('telra-autoread')}
+function arRate(){const v=+ls('telra-arrate');return v>0?v:0.85}
+const ELEM=new Set('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba La Ce Pt Au Hg Tl Pb Bi Po At Rn Fr Ra U Pu'.split(' '));
+function speakable(t){
+  t=String(t||'');
+  t=t.replace(/\(read as:[^)]*\)/gi,'');
+  // pronunciation guides: use them for capitalised names, drop them after ordinary words
+  t=t.replace(/\((I{1,3}|IV|VI{0,3})\)/g,(m,n)=>' '+({I:'one',II:'two',III:'three',IV:'four',V:'five',VI:'six',VII:'seven'}[n])+' ');
+  t=t.replace(/(^|[.?!:]\s+|[^.?!:])((?:[A-Z][\w’']*\s+){0,2}[\w’'-]+)\s*\[([^\]]+)\]/g,(m,pre,words,hint)=>{const ws=words.trim().split(/\s+/),hs=hint.trim().split(/\s+/);
+    const startOfSentence=/^$|[.?!:]\s+$/.test(pre)&&ws.length<=hs.length;
+    const cap=hs.length>=2&&ws.length>=hs.length&&ws.slice(-hs.length).every(w=>/^[A-Z]/.test(w))&&!startOfSentence;if(!cap)return pre+words;
+    const keep=ws.slice(0,Math.max(0,ws.length-hs.length));return pre+keep.concat(hs.map(h=>h.replace(/-/g,' ').toLowerCase())).join(' ')});
+  t=t.replace(/\[[^\]]*\]/g,'');
+  const sub={'₀':0,'₁':1,'₂':2,'₃':3,'₄':4,'₅':5,'₆':6,'₇':7,'₈':8,'₉':9};t=t.replace(/[₀-₉]+/g,m=>' '+[...m].map(c=>sub[c]).join('')+' ');
+  t=t.replace(/²/g,' squared').replace(/³/g,' cubed').replace(/[⁰¹⁴⁵⁶⁷⁸⁹]+/g,m=>' to the '+[...m].map(c=>'⁰¹²³⁴⁵⁶⁷⁸⁹'.indexOf(c)).join(''));
+  // chemical formulas, spaced ("Fe 2 O 3") or compact ("CO2", "NaCl")
+  t=t.replace(/\b(?:[A-Z][a-z]?\s?\d*\s?){2,}\b/g,m=>{const parts=m.trim().match(/[A-Z][a-z]?|\d+/g)||[];if(!parts.length||!parts.every(x=>/^\d+$/.test(x)||ELEM.has(x))||!parts.some(x=>/^\d+$/.test(x))&&parts.length<2)return m;
+    if(/^[A-Z][a-z]+$/.test(m.trim()))return m;return ' '+parts.map(x=>/^\d+$/.test(x)?x:x.toUpperCase().split('').join(' ')).join(' ')+' '});
+  t=t.replace(/[–−]\s?(?=\d)/g,' negative ').replace(/π/g,' pi ').replace(/√\s?/g,' the square root of ').replace(/×/g,' times ').replace(/÷/g,' divided by ').replace(/°/g,' degrees').replace(/≤/g,' less than or equal to ').replace(/≥/g,' greater than or equal to ').replace(/\s=\s/g,' equals ').replace(/\^/g,' to the power ');
+  t=t.replace(/\bm\/s(²|\^2| squared)/g,' meters per second squared').replace(/\bm\/s\b/g,' meters per second').replace(/\bkm\/h\b/g,' kilometers per hour').replace(/\bg\/mol\b/g,' grams per mole').replace(/\bN\/m\b/g,' newtons per meter').replace(/\bg\/cm(³|\^3| cubed)/g,' grams per cubic centimeter').replace(/\bJ\/s\b/g,' joules per second');
+  t=t.replace(/\s\+\s/g,' plus ');
+  t=t.replace(/(\w)\s?\/\s?(\w)/g,'$1 over $2');
+  return t.replace(/\s+/g,' ').trim();
+}
+function questionScript(q,kind,n){const subj=q.category||'';const mc=q.type==='MC';
+  let s=`${kind} ${n}. ${subj}. ${mc?'Multiple choice.':'Short answer.'} ${speakable(q.question)}`;
+  if(mc&&q.choices)s+=' '+Object.entries(q.choices).map(([k,v])=>`${k}: ${speakable(v)}.`).join(' ');return s}
+let RD={gen:0};
+function pickVoice(){const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));const want=ls('telra-arvoice');if(want){const v=vs.find(x=>x.name===want);if(v)return v}
+  return vs.find(v=>/natural/i.test(v.name)&&/en-US/i.test(v.lang))||vs.find(v=>/Google US English/i.test(v.name))||vs.find(v=>/(Aria|Jenny|Samantha|Zira)/i.test(v.name))||vs.find(v=>/en-US/i.test(v.lang))||vs[0]}
+function readAloud(text,onEnd){stopReading();const g=++RD.gen;try{
+  const chunks=text.match(/[^.?!;:]+[.?!;:]*/g)||[text];const v=pickVoice();let i=0;
+  const next=()=>{if(g!==RD.gen)return;if(i>=chunks.length){RD.on=false;onEnd&&onEnd();return}const txt=chunks[i++].trim();const u=new SpeechSynthesisUtterance(txt);if(v)u.voice=v;u.rate=arRate();let done=false;const fin=()=>{if(done)return;done=true;setTimeout(next,120)};const guard=setTimeout(fin,2000+txt.split(/\s+/).length*800/arRate());u.onend=()=>{clearTimeout(guard);fin()};u.onerror=()=>{if(g===RD.gen){RD.on=false}};speechSynthesis.speak(u)};
+  RD.on=true;next()}catch(e){RD.on=false;onEnd&&onEnd()}}
+function stopReading(){RD.gen++;RD.on=false;try{speechSynthesis.cancel()}catch(e){}}
+function autoReadTU(){if(!arOn()||G.paper)return;const q=curQ();if(!q)return;const qi=G.qi;readAloud(questionScript(q,'Toss-up',G.qi+1),()=>{if(G&&G.qi===qi&&G.phase==='reading'&&G.part==='tu')advance()})}
+function autoReadBonus(){if(!arOn()||G.paper)return;const q=curQ();if(!q)return;const qi=G.qi;readAloud(questionScript(q,'Bonus',G.qi+1),()=>{if(G&&G.qi===qi&&G.phase==='bonus_ready')advance()})}
+function adjScore(t,d){snapshot();G.teams[t].score+=d;ev('adjust',{t,d});render()}
+function editScore(t){const v=prompt(`Set ${G.teams[t].name}'s score to:`,G.teams[t].score);if(v===null||v.trim()===''||isNaN(+v))return;snapshot();const d=+v-G.teams[t].score;G.teams[t].score=+v;ev('adjust',{t,d});render()}
 function remaining(){return G.timerEnd?Math.max(0,G.timerEnd-performance.now()):0}
 function others(t){return teamsList().filter(x=>x!==t)}
 function unlocked(){return teamsList().filter(t=>!G.locked.includes(t))}
-function nextTossup(){G.qi++;G.part='tu';G.locked=[];G.buzz=null;G.bonusTeam=null;stopTimer();G.phase=(!G.paper&&G.qi>=G.pairs.length)?'end':'ready'}
+function nextTossup(){stopReading();G.qi++;G.part='tu';G.locked=[];G.buzz=null;G.bonusTeam=null;stopTimer();G.phase=(!G.paper&&G.qi>=G.pairs.length)?'end':'ready'}
 function advance(){ // SPACE
   switch(G.phase){
-    case'ready':G.phase='reading';G.locked=[];break;
-    case'reading':G.phase='open';startTimer(5000);break;
+    case'ready':G.phase='reading';G.locked=[];render();autoReadTU();return;
+    case'reading':stopReading();G.phase='open';startTimer(tuMs());break;
     case'dead':nextTossup();break;
-    case'bonus_ready':G.phase='bonus_timer';startTimer(20000);break;
+    case'bonus_ready':stopReading();G.phase='bonus_timer';startTimer(20000);break;
     case'bonus_timer':if(G.timeUp){snapshot();ev('bonus-miss',{t:G.bonusTeam});nextTossup()}break;
     default:return;
   }
@@ -214,21 +256,21 @@ function onBuzz(pid,recv){
 }
 function commitBuzz(pid){
   const p=G.players[pid];const interrupt=G.phase==='reading';snapshot();
-  G.buzz={pid,name:p.name,team:p.team,interrupt,seat:p.seat||''};stopTimer();G.phase='buzzed';stat(pid).buzz++;sBuzz();render();
+  G.buzz={pid,name:p.name,team:p.team,interrupt,seat:p.seat||''};stopReading();stopTimer();G.phase='buzzed';stat(pid).buzz++;sBuzz();render();
 }
 function judge(kind){ // 'c' | 'w' | 'p'
   if(G.phase==='buzzed'){
     snapshot();const b=G.buzz,s=stat(b.pid);
     if(kind==='c'){G.teams[b.team].score+=4;s.c++;if(b.interrupt)s.ic++;ev('tu-c',{pid:b.pid,name:b.name,t:b.team,interrupt:b.interrupt});G.bonusTeam=b.team;sOk();
-      if(G.paper||curPairHasBonus()){G.part='b';G.phase='bonus_ready'}else nextTossup()}
+      if(G.paper||curPairHasBonus()){G.part='b';G.phase='bonus_ready';setTimeout(autoReadBonus,900)}else nextTossup()}
     else{s.w++;if(b.interrupt)s.iw++;if(kind==='p')s.pen++;
       const pen=b.interrupt&&intPenOn(); /* interrupt penalty: on/off switch on the host screen */
       if(pen)others(b.team).forEach(t=>G.teams[t].score+=4);
       ev(kind==='p'?'penalty':b.interrupt?'tu-int-w':'tu-w',{pid:b.pid,name:b.name,t:b.team,interrupt:b.interrupt,gave:pen});sBad();
       G.locked.push(b.team);G.buzz=null;
       if(unlocked().length===0)G.phase='dead';
-      else if(b.interrupt){G.phase='reading'} // moderator re-reads for the other team, then SPACE
-      else{G.phase='open';startTimer(5000)}}
+      else if(b.interrupt){G.phase='reading';setTimeout(autoReadTU,700)} // re-read in full for the other team, then SPACE
+      else{G.phase='open';startTimer(tuMs())}}
     render();return;
   }
   if(G.phase==='bonus_timer'||G.phase==='bonus_ready'){
@@ -264,7 +306,7 @@ function statusHtml(forPlayers){
   return `<div class="status ${cls}">${t}</div>`;
 }
 function fmtClock(ms){const s=Math.ceil(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
-function scoresHtml(){return `<div class="scores">${teamsList().map(t=>`<div class="score t${t} ${G.locked.includes(t)&&!String(G.phase).startsWith('bonus')?'locked':''}"><div class="n c${t}">${esc(G.teams[t].name)}</div><div class="v">${G.teams[t].score}</div></div>`).join('')}</div>`}
+function scoresHtml(edit){return `<div class="scores">${teamsList().map(t=>`<div class="score t${t} ${G.locked.includes(t)&&!String(G.phase).startsWith('bonus')?'locked':''}"><div class="n c${t}">${esc(G.teams[t].name)}</div><div class="v" ${edit?`style="cursor:pointer" title="Click to type a score" onclick="editScore('${t}')"`:''}>${G.teams[t].score}</div>${edit?`<div class="row" style="justify-content:center;gap:4px;margin-top:4px">${[-10,-4,4,10].map(d=>`<button class="small" style="padding:2px 7px" onclick="adjScore('${t}',${d});this.blur()">${d>0?'+':''}${d}</button>`).join('')}</div>`:''}</div>`).join('')}</div>`}
 function catOf(){if(G.paper)return G.part==='tu'?'TOSS-UP':'BONUS';const q=curQ();return q?`${q.category} · ${G.part==='tu'?'TOSS-UP':'BONUS'} · ${q.type==='MC'?'Multiple Choice':'Short Answer'}`:''}
 function publicState(){
   return {t:'state',phase:G.phase,locked:G.locked,buzz:G.buzz&&{name:G.buzz.name,team:G.buzz.team,interrupt:G.buzz.interrupt,pid:G.buzz.pid,seat:G.buzz.seat},warn5:!!G.warn5,bonusCap:G.bonusTeam?captainOf(G.bonusTeam):'',
@@ -391,7 +433,7 @@ function subDialog(){
       inn.seat=out.seat;inn.bench=false;out.seat='';out.bench=true;G.players[k]=inn;G.players['s'+t]=out;G.subs=(G.subs||[]).concat({t,in:inn.name,out:out.name})});
     box.remove();G.clock={half:2,left:(G.halfMs||8*60*1000),running:false,last:0};render()};
 }
-function clickBuzz(k){if(!G)return;if(G.phase==='ready')G.phase='open';onBuzz(k,performance.now());document.activeElement&&document.activeElement.blur()}
+function clickBuzz(k){if(!G)return;if(G.phase==='ready'||G.phase==='dead'){if(G.phase==='dead'&&G.log.length&&G.log[G.log.length-1].k==='tu-dead'&&G.log[G.log.length-1].qn===G.qi+1)G.log.pop();G.phase='open';G.timeUp=false}onBuzz(k,performance.now());document.activeElement&&document.activeElement.blur()}
 function finishMatch(){const [a,b]=G.tk,sa=G.teams[a].score,sb=G.teams[b].score;
   if(sa===sb){alert(`Tied ${sa}–${sb}. NSB rule: play one more toss-up (sudden death). Read the next toss-up, then press Finish match again.`);return}
   const w=sa>sb?a:b;saveSession();const B=bk();const score=`Team ${a} ${sa} – ${sb} Team ${b}`;
@@ -434,6 +476,11 @@ function hostMain(){
         <kbd>P</kbd><span>Blurt (answered before being recognized) or talking on a toss-up. Same scoring as Wrong — +4 to others only if it was an interrupt. Logged as a penalty</span>
         <kbd>U</kbd><span>Buzzed before the subject was read? Press Undo — not an interrupt, player can buzz again</span>
         <kbd>U</kbd><span>Undo last call</span><kbd>N</kbd><span>Skip question</span><kbd>T</kbd><span>Game clock</span><kbd>I</kbd><span>Flip interrupt on the current buzz (if you forgot SPACE after reading)</span></div>
+        <div class="small row" style="margin-top:8px;gap:8px;flex-wrap:wrap"><label class="row"><input type="checkbox" id="ar" ${arOn()?'checked':''}> Read questions aloud</label>
+          <label>Speed <select id="arr">${[[0.75,'Slow'],[0.85,'Moderator pace'],[0.95,'Normal']].map(([v,l])=>`<option value="${v}" ${Math.abs(arRate()-v)<.01?'selected':''}>${l}</option>`).join('')}</select></label>
+          <label>Voice <select id="arv" style="max-width:190px"></select></label><button id="artest" class="small">Test voice</button>
+          <label>Toss-up buzz time <select id="tut">${[5,7,10,15].map(v=>`<option value="${v}" ${tuMs()===v*1000?'selected':''}>${v} s${v===5?' (NSB)':''}</option>`).join('')}</select></label></div>
+        <div class="small mute">With read-aloud on: SPACE starts reading; the buzz clock starts by itself when it finishes. A buzz stops the reading. After a wrong interrupt it re-reads for the other team. Bonuses are read automatically, then the 20 s starts.</div>
         <label class="small row" style="margin-top:8px"><input type="checkbox" id="intpen" ${intPenOn()?'checked':''}> Interrupt penalty: wrong interrupt gives the other team(s) +4. Off = no points, the team is just locked out (interrupts are still logged)</label>
         <label class="small row" style="margin-top:8px"><input type="checkbox" id="voice" ${voiceOn()?'checked':''}> Timekeeper voice: says "Five seconds" on bonuses and "Time" when the clock runs out (unmute this laptop / share computer audio in the meeting)</label>
         <p class="small mute" style="margin:6px 0 0">Positions: pick each player's seat (A Captain, A1–A3, A4 = alternate) in the list. The buzz shows the seat, like the real NSB lights. Seats are remembered for next time.</p>
@@ -442,6 +489,13 @@ function hostMain(){
     </div>
   </div>`;
   $('#intpen').onchange=e=>{ls('telra-intpen',e.target.checked);e.target.blur()};
+  $('#ar').onchange=e=>{ls('telra-autoread',e.target.checked);if(!e.target.checked)stopReading();e.target.blur()};
+  $('#arr').onchange=e=>{ls('telra-arrate',+e.target.value);e.target.blur()};
+  $('#tut').onchange=e=>{ls('telra-tutime',+e.target.value);e.target.blur()};
+  const fillV=()=>{const vs=speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang));const cur=(pickVoice()||{}).name;$('#arv').innerHTML=vs.map(v=>`<option ${v.name===cur?'selected':''}>${esc(v.name)}</option>`).join('')||'<option>(default)</option>'};
+  try{fillV();speechSynthesis.onvoiceschanged=fillV}catch(e){}
+  $('#arv').onchange=e=>{ls('telra-arvoice',e.target.value);e.target.blur()};
+  $('#artest').onclick=e=>{e.target.blur();readAloud(questionScript({category:'Chemistry',type:'MC',question:'What is the chemical formula for ferric oxide, and what is the oxidation number of iron in Fe 2 O 3?',choices:{W:'plus 1',X:'plus 2',Y:'plus 3',Z:'negative 2'}},'Toss-up',1))};
   $('#voice').onchange=e=>{ls('telra-voice',e.target.checked);e.target.blur();if(e.target.checked)say('Voice on')};
   if(G.mode==='net'){const c=$('#comp');c.onchange=()=>{G.comp=c.checked;c.blur()};startNetHost()}
   document.onkeydown=e=>{
@@ -465,9 +519,9 @@ function render(){
     <div class="qtext">${esc(q.question)}</div>${q.type==='MC'?`<ul class="choices">${Object.entries(q.choices).map(([k,v])=>`<li><b>${k})</b> ${esc(v)}</li>`).join('')}</ul>`:''}
     <div class="ans">ANSWER: ${esc(q.answer)}</div>`}
   $('#qbox').innerHTML=h;
-  const wb=$('#whob');if(wb){if(G.mode!=='local'||G.part!=='tu'||G.phase==='end')wb.innerHTML='';else{const can=['ready','reading','open'].includes(G.phase);
+  const wb=$('#whob');if(wb){if(G.mode!=='local'||G.part!=='tu'||G.phase==='end')wb.innerHTML='';else{const can=['ready','reading','open','dead'].includes(G.phase);
     wb.innerHTML=`<div class="card" style="padding:10px 12px"><div class="small mute" style="margin-bottom:6px">WHO BUZZED? Click the player whose buzzer lit up (or press their number)</div>${teamsList().map(t=>`<div class="row" style="margin:4px 0;gap:6px">${Object.entries(G.players).filter(([k,p])=>k[0]==='k'&&p.team===t).sort((a,b)=>a[0].localeCompare(b[0])).map(([k,p])=>`<button class="c${t}" style="flex:1;min-width:120px" ${!can||G.locked.includes(t)?'disabled':''} onclick="clickBuzz('${k}')"><kbd>${k.slice(1)}</kbd> ${esc(seatLabel(t,p.seat))} · ${esc(p.name.split(' ')[0])}</button>`).join('')}</div>`).join('')}</div>`}}
-  $('#scores').innerHTML=scoresHtml();
+  $('#scores').innerHTML=scoresHtml(true);
   const pl=Object.entries(G.players);$('#pc').textContent=`(${pl.filter(([,p])=>p.online).length})`;
   const so=x=>SEATS.indexOf(x.seat||'')<0?9:SEATS.indexOf(x.seat);$('#players').innerHTML=pl.sort((a,b)=>a[1].team.localeCompare(b[1].team)||so(a[1])-so(b[1])||a[1].name.localeCompare(b[1].name)).map(([id,p])=>{const s=p.s||{};return `<div class="pl ${p.online?'':'off'}"><span><button class="tb c${p.team}" onclick="cycleTeam('${id}')" title="Change team">${p.team}</button> <select class="seatsel" title="Position" onchange="setSeat('${id}',this.value)">${['',...SEATS].map(x=>`<option value="${x}" ${(p.seat||'')===x?'selected':''}>${x?seatLabel(p.team,x):'–'}</option>`).join('')}</select> ${esc(p.name)}${G.mode==='local'?(id[0]==='s'?' <span class="mute small">(sub · on the bench)</span>':` <kbd>${id.slice(1)}</kbd>`):''}</span><span class="mute small">${s.c||0}✓ ${s.w||0}✗${s.iw?` (${s.iw} int)`:''}${G.mode==='net'?` · ${p.online?Math.round(p.rtt||0)+'ms':'offline'}`:''}</span></div>`}).join('')||'<p class="mute small">Waiting for players…</p>';
   renderTimersOnly();broadcast();saveSession();
@@ -480,7 +534,7 @@ function renderTimersOnly(){
   if(G.timerEnd||G.clock.running)bc&&bc.postMessage(publicState());
 }
 function cycleTeam(id){const p=G.players[id];const t=teamsList();p.team=t[(t.indexOf(p.team)+1)%t.length];p.seat='';autoSeat(id);render()}
-const KLAB={'tu-c':'Toss-up correct','tu-w':'Toss-up wrong','tu-int-w':'Wrong interrupt','penalty':'Blurt / talking','tu-dead':'No one buzzed','tu-skip':'Skipped','bonus-c':'Bonus correct','bonus-w':'Bonus wrong','bonus-miss':'Bonus timed out'};
+const KLAB={'tu-c':'Toss-up correct','tu-w':'Toss-up wrong','tu-int-w':'Wrong interrupt','penalty':'Blurt / talking','tu-dead':'No one buzzed','tu-skip':'Skipped','adjust':'Score adjusted','bonus-c':'Bonus correct','bonus-w':'Bonus wrong','bonus-miss':'Bonus timed out'};
 const SUBJS=['Life Science','Earth Science','Chemistry','Physics','Math','Energy','General Science'];
 function sessionRecord(){return {date:new Date().toISOString(),set:G.setLabel,teams:teamsList().map(t=>({k:t,name:G.teams[t].name,score:G.teams[t].score})),
   players:Object.values(G.players).map(p=>({name:p.name,team:p.team})),log:G.log.slice()}}
