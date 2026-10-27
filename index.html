@@ -122,9 +122,10 @@ function route(){
   if(h.startsWith('#projector'))return projectorView();
   if(h.startsWith('#join'))return joinView(h.split('=')[1]||'');
   if(h.startsWith('#cohost'))return cohostView(h.split('=')[1]||'');
-  if(h==='#host')return needHost(()=>hostSetup('net'));
-  if(h==='#local')return needHost(()=>hostSetup('local'));
-  if(h==='#bracket')return needHost(()=>bracketSetup());
+  if(h==='#host')return needHost(()=>hostSetup('net'),'Host online room');
+  if(h==='#local')return needHost(()=>hostSetup('local'),'One-laptop');
+  if(h==='#bracket')return needHost(()=>bracketSetup(),'Bracket');
+  if(h==='#hostlog')return hostLogView();
   if(h==='#solo')return soloView();
   if(h==='#sprint')return sprintView();
   homeView();
@@ -145,6 +146,7 @@ function homeView(){
     <div class="card"><h2>Coach · Online room</h2><p>Students buzz from their own laptop/phone (Mon/Wed online, or Fridays in person on devices).</p><button class="primary" onclick="location.hash='host'">Host a room</button></div>
     <div class="card"><h2>Coach · One-laptop mode</h2><p>No internet needed. Players buzz on keys <kbd>1</kbd>–<kbd>5</kbd> (Team A) and <kbd>6</kbd>–<kbd>0</kbd> (Team B). Plug in a second USB keyboard for Team B.</p><button onclick="location.hash='local'">Start one-laptop game</button></div>
     <div class="card"><h2>Coach · Bracket match (physical buzzers)</h2><p>Semifinal → final. 4 v 4 on buzzers <kbd>1</kbd>–<kbd>8</kbd>, 1 sub per team who comes on at half time. The best team of the week waits in the final.</p><button onclick="location.hash='bracket'">Set up bracket match</button></div>
+    <div class="card"><h2>Coach · Host log</h2><p>See who opened a host screen, from which device, and which student name that device joined with.</p><button onclick="location.hash='hostlog'">Open host log</button></div>
     <div class="card"><h2>Topic sprint (home)</h2><p>This week's topic for your subject group. Same question pool for every player on Teams A, B and C. The question is read out word by word, then you get 5 seconds.</p><button class="primary" onclick="location.hash='sprint'">Start a sprint</button></div>
     <div class="card"><h2>Solo practice (home)</h2><p>Questions appear word by word like they're being read. Buzz with <kbd>Space</kbd>, check your answer, track what you miss.</p><button onclick="location.hash='solo'">Practice alone</button></div>
   </div>`;
@@ -341,10 +343,34 @@ let _MI=null;function MATCHIDS(){if(_MI)return _MI;_MI=new Set();SPRINTS.forEach
 let SEEN=new Set();
 async function sha(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
 function hostOK(){const v=ls('telra-hostok');return v&&v.h===HOSTHASH&&v.exp>Date.now()}
-function needHost(go){if(!isLive()||hostOK())return go();
-  app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Coach / host only</h1><p class="mute">Enter the host passcode to open a session.</p><input id="hp" type="password" style="width:100%;font-size:22px;text-align:center" autocomplete="off"><p class="small" id="hm" style="color:var(--bad);min-height:1.2em"></p><div class="row" style="justify-content:center"><button class="primary" id="hb">Unlock</button><button onclick="location.hash=''">Back</button></div></div>`;
-  const tryIt=async()=>{const h=await sha($('#hp').value.trim().toLowerCase());if(h===HOSTHASH){ls('telra-hostok',{h,exp:Date.now()+30*864e5});go()}else{$('#hm').textContent='Wrong passcode.';$('#hp').value=''}};
-  $('#hb').onclick=tryIt;$('#hp').onkeydown=e=>{if(e.key==='Enter')tryIt()};$('#hp').focus()}
+const LOGTOPIC='telra-nsb-hostlog-q7m4x9k2';
+function devInfo(){const u=navigator.userAgent;const os=/Windows/.test(u)?'Windows':/Mac OS/.test(u)?'Mac':/CrOS/.test(u)?'Chromebook':/Android/.test(u)?'Android':/iPhone|iPad/.test(u)?'iPhone/iPad':'Other';
+  const br=/Edg\//.test(u)?'Edge':/Chrome\//.test(u)?'Chrome':/Firefox/.test(u)?'Firefox':/Safari/.test(u)?'Safari':'Browser';
+  let dev=ls('telra-dev');if(!dev){dev='d'+Math.random().toString(36).slice(2,7);ls('telra-dev',dev)}return {os,br,dev,screen:screen.width+'x'+screen.height}}
+function hostLog(event,extra){try{const me=ls('telra-me')||{};const d=devInfo();
+  const rec=Object.assign({t:new Date().toISOString(),event,name:ls('telra-hostname')||'',joinedAs:me.name||'',os:d.os,br:d.br,dev:d.dev,screen:d.screen},extra||{});
+  const L=ls('telra-hostlog')||[];L.push(rec);ls('telra-hostlog',L.slice(-300));
+  const when=new Date().toLocaleString('en-US',{timeZone:'America/New_York',weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  const msg=`${when} · ${event}${rec.set?' · '+rec.set:''}\nTyped name: ${rec.name||'(none)'} · This device last joined as: ${rec.joinedAs||'(never joined)'}\n${d.os} ${d.br} · device ${d.dev} · screen ${d.screen}`;
+  fetch('https://ntfy.sh/'+LOGTOPIC,{method:'POST',body:msg,headers:{'Title':'Telra buzzer: '+event,'Tags':/wrong/i.test(event)?'warning':'computer'}}).catch(()=>{})}catch(e){}}
+function needHost(go,mode){
+  const pass=isLive()&&!hostOK();
+  app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Coach / host only</h1><p class="mute">Opening a host screen is logged.</p>
+    <input id="hn" placeholder="Your name" style="width:100%;font-size:20px;text-align:center;margin-bottom:8px" value="${esc(ls('telra-hostname')||'')}" autocomplete="off">
+    ${pass?`<input id="hp" type="password" placeholder="Host passcode" style="width:100%;font-size:20px;text-align:center" autocomplete="off">`:''}
+    <p class="small" id="hm" style="color:var(--bad);min-height:1.2em"></p><div class="row" style="justify-content:center"><button class="primary" id="hb">${pass?'Unlock':'Continue'}</button><button onclick="location.hash=''">Back</button></div></div>`;
+  const tryIt=async()=>{const nm=$('#hn').value.trim();if(nm.length<2){$('#hm').textContent='Type your name.';return}ls('telra-hostname',nm);
+    if(pass){const h=await sha($('#hp').value.trim().toLowerCase());if(h!==HOSTHASH){hostLog('WRONG passcode',{mode});$('#hm').textContent='Wrong passcode.';$('#hp').value='';return}ls('telra-hostok',{h,exp:Date.now()+30*864e5});hostLog('Unlocked with passcode',{mode})}
+    else hostLog('Opened host screen',{mode});go()};
+  $('#hb').onclick=tryIt;(pass?$('#hp'):$('#hn')).onkeydown=e=>{if(e.key==='Enter')tryIt()};$('#hn').onkeydown=e=>{if(e.key==='Enter')(pass?$('#hp').focus():tryIt())};(ls('telra-hostname')&&pass?$('#hp'):$('#hn')).focus()}
+async function hostLogView(){
+  const ok=async()=>{app.innerHTML=`<h1>Host log</h1><p class="mute small">Everyone who opened a host screen, on any device, in the last 12 hours (server keeps 12 h). For the full history, follow the ntfy topic in the ntfy app (see below). "Last joined as" is the student name this device last used to join a room.</p><div class="row"><button onclick="hostLogView()">Refresh</button><button onclick="location.hash=''">Back</button></div><div id="hl" class="card" style="margin-top:10px">Loading…</div><h2 style="margin-top:14px">This device only (saved here)</h2><div id="hl2" class="card"></div><p class="small mute">Phone alerts: install the free <b>ntfy</b> app → Subscribe → topic <b>${LOGTOPIC}</b>. You'll get a notification each time someone opens a host screen, and the app keeps the history.</p>`;
+    const tbl=rows=>rows.length?`<table class="small" style="width:100%;border-collapse:collapse">${rows.map(r=>`<tr style="border-bottom:1px solid var(--line,#333)"><td style="padding:4px;white-space:pre-wrap">${esc(r)}</td></tr>`).join('')}</table>`:'<p class="mute small">Nothing yet.</p>';
+    try{const t=await (await fetch('https://ntfy.sh/'+LOGTOPIC+'/json?poll=1&since=all')).text();const rows=t.trim().split('\n').filter(Boolean).map(l=>JSON.parse(l)).filter(x=>x.event==='message').reverse().map(x=>x.title.replace('Telra buzzer: ','')+'\n'+x.message);$('#hl').innerHTML=tbl(rows)}catch(e){$('#hl').innerHTML='<p class="mute small">Could not reach the log server from this network.</p>'}
+    const L=(ls('telra-hostlog')||[]).slice().reverse().map(r=>`${new Date(r.t).toLocaleString('en-US',{timeZone:'America/New_York'})} · ${r.event}${r.set?' · '+r.set:''} · typed: ${r.name||'-'} · joined as: ${r.joinedAs||'-'} · ${r.os} ${r.br} ${r.dev}`);$('#hl2').innerHTML=tbl(L)};
+  if(hostOK())return ok();
+  app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Host log</h1><input id="hp" type="password" placeholder="Host passcode" style="width:100%;font-size:20px;text-align:center"><p class="small" id="hm" style="color:var(--bad)"></p><button class="primary" id="hb">Open</button></div>`;
+  const go=async()=>{const h=await sha($('#hp').value.trim().toLowerCase());if(h===HOSTHASH){ls('telra-hostok',{h,exp:Date.now()+30*864e5});ok()}else $('#hm').textContent='Wrong passcode.'};$('#hb').onclick=go;$('#hp').onkeydown=e=>{if(e.key==='Enter')go()}}
 // when a dated session set may be opened: Mon/Wed from 7:20 pm ET, Friday any time that day
 function setOpensAt(st){if(!/^\d{4}-\d\d-\d\d$/.test(st.id))return 0;const d=new Date(st.id+'T12:00:00Z').getUTCDay();
   const off=st.id>='2026-11-01'&&st.id<'2027-03-14'?'-05:00':'-04:00'; // Charlotte: EST from Nov 1
@@ -504,7 +530,7 @@ function finishMatch(){const [a,b]=G.tk,sa=G.teams[a].score,sb=G.teams[b].score;
   location.hash='bracket';route()}
 
 // ================= HOST MAIN =================
-function hostMain(){
+function hostMain(){hostLog('Started session',{set:G&&G.setLabel});
   app.innerHTML=`
   <div class="row" style="justify-content:space-between;margin-bottom:10px">
     <div><h1>${esc(G.setLabel)}</h1><div class="mute small" id="qcount"></div></div>
@@ -888,7 +914,7 @@ function soloView(){
   function stats(){$('#sst').innerHTML=`<table><tr><th>Category</th><th>Right</th><th>Wrong</th><th>%</th></tr>${CATS.map(c=>{const x=st.cats[c]||{r:0,w:0};const n=x.r+x.w;return `<tr><td>${c}</td><td>${x.r}</td><td>${x.w}</td><td>${n?Math.round(100*x.r/n)+'%':'–'}</td></tr>`}).join('')}</table><p class="small mute">${st.missed.length} missed questions saved.</p>`}
   stats();
   function pick(){const cats=[...document.querySelectorAll('.gen input[type=checkbox][value]:checked')].map(x=>x.value);const t1=+$('#t1').value,t2=+$('#t2').value;const seen=new Set(st.seen);
-    let pool=BANK.filter(x=>!x.rsv&&!(isLive()&&(MATCHIDS().has(x.id)||published().has(x.id)))&&cats.includes(x.category)&&x.tier>=t1&&x.tier<=t2&&(!$('#uns').checked||!seen.has(x.id)));return pool[Math.floor(Math.random()*pool.length)]}
+    let pool=BANK.filter(x=>!x.rsv&&cats.includes(x.category)&&x.tier>=t1&&x.tier<=t2&&(!$('#uns').checked||!seen.has(x.id)));return pool[Math.floor(Math.random()*pool.length)]}
   function start(){clearInterval(tm);q=pick();if(!q){$('#sq').textContent='No questions left for these filters.';return}
     st.seen.push(q.id);save();
     words=q.question.split(/\s+/);if(q.type==='MC')Object.entries(q.choices).forEach(([k,v])=>{words.push('\n'+k+')');words.push(...v.split(/\s+/))});
