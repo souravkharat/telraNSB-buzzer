@@ -126,8 +126,9 @@ function route(){
   if(h==='#local')return needHost(()=>hostSetup('local'),'One-laptop');
   if(h==='#bracket')return needHost(()=>bracketSetup(),'Bracket');
   if(h==='#hostlog')return hostLogView();
-  if(h==='#solo')return soloView();
-  if(h==='#sprint')return sprintView();
+  if(h==='#solo')return needStudent(soloView,'Solo practice');
+  if(h==='#sprint')return needStudent(sprintView,'Topic sprint');
+  if(h==='#practicelog')return practiceLogView();
   homeView();
 }
 window.addEventListener('hashchange',()=>location.reload());
@@ -146,7 +147,7 @@ function homeView(){
     <div class="card"><h2>Coach · Online room</h2><p>Students buzz from their own laptop/phone (Mon/Wed online, or Fridays in person on devices).</p><button class="primary" onclick="location.hash='host'">Host a room</button></div>
     <div class="card"><h2>Coach · One-laptop mode</h2><p>No internet needed. Players buzz on keys <kbd>1</kbd>–<kbd>5</kbd> (Team A) and <kbd>6</kbd>–<kbd>0</kbd> (Team B). Plug in a second USB keyboard for Team B.</p><button onclick="location.hash='local'">Start one-laptop game</button></div>
     <div class="card"><h2>Coach · Bracket match (physical buzzers)</h2><p>Semifinal → final. 4 v 4 on buzzers <kbd>1</kbd>–<kbd>8</kbd>, 1 sub per team who comes on at half time. The best team of the week waits in the final.</p><button onclick="location.hash='bracket'">Set up bracket match</button></div>
-    <div class="card"><h2>Coach · Host log</h2><p>See who opened a host screen, from which device, and which student name that device joined with.</p><button onclick="location.hash='hostlog'">Open host log</button></div>
+    <div class="card"><h2>Coach · Host log</h2><p>See who opened a host screen, from which device, and which student name that device joined with.</p><button onclick="location.hash='hostlog'">Open host log</button> <button onclick="location.hash='practicelog'">Practice log</button></div>
     <div class="card"><h2>Topic sprint (home)</h2><p>This week's topic for your subject group. Same question pool for every player on Teams A, B and C. The question is read out word by word, then you get 5 seconds.</p><button class="primary" onclick="location.hash='sprint'">Start a sprint</button></div>
     <div class="card"><h2>Solo practice (home)</h2><p>Questions appear word by word like they're being read. Buzz with <kbd>Space</kbd>, check your answer, track what you miss.</p><button onclick="location.hash='solo'">Practice alone</button></div>
   </div>`;
@@ -352,7 +353,7 @@ function hostLog(event,extra){try{const me=ls('telra-me')||{};const d=devInfo();
   const L=ls('telra-hostlog')||[];L.push(rec);ls('telra-hostlog',L.slice(-300));
   const when=new Date().toLocaleString('en-US',{timeZone:'America/New_York',weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
   const msg=`${when} · ${event}${rec.set?' · '+rec.set:''}\nTyped name: ${rec.name||'(none)'} · This device last joined as: ${rec.joinedAs||'(never joined)'}\n${d.os} ${d.br} · device ${d.dev} · screen ${d.screen}`;
-  fetch('https://ntfy.sh/'+LOGTOPIC,{method:'POST',body:msg,headers:{'Title':'Telra buzzer: '+event,'Tags':/wrong/i.test(event)?'warning':'computer'}}).catch(()=>{})}catch(e){}}
+  fetch('https://ntfy.sh/'+LOGTOPIC,{method:'POST',body:msg,headers:{'Title':('Telra buzzer: '+event).replace(/[^\x20-\x7E]/g,''),'Tags':/wrong/i.test(event)?'warning':'computer'}}).catch(()=>{})}catch(e){}}
 function needHost(go,mode){
   const pass=isLive()&&!hostOK();
   app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Coach / host only</h1><p class="mute">Opening a host screen is logged.</p>
@@ -363,6 +364,42 @@ function needHost(go,mode){
     if(pass){const h=await sha($('#hp').value.trim().toLowerCase());if(h!==HOSTHASH){hostLog('WRONG passcode',{mode});$('#hm').textContent='Wrong passcode.';$('#hp').value='';return}ls('telra-hostok',{h,exp:Date.now()+30*864e5});hostLog('Unlocked with passcode',{mode})}
     else hostLog('Opened host screen',{mode});go()};
   $('#hb').onclick=tryIt;(pass?$('#hp'):$('#hn')).onkeydown=e=>{if(e.key==='Enter')tryIt()};$('#hn').onkeydown=e=>{if(e.key==='Enter')(pass?$('#hp').focus():tryIt())};(ls('telra-hostname')&&pass?$('#hp'):$('#hn')).focus()}
+
+// ================= STUDENT PRACTICE LOG =================
+const ACTTOPIC='telra-nsb-practice-r8w2p5n6';
+const ACT={kind:'',detail:'',n:0,r:0,by:{},t0:0,t1:0,timer:null};
+function meName(){return (ls('telra-me')||{}).name||''}
+function actSend(title,data){try{const d=devInfo();const body=JSON.stringify(Object.assign({name:meName(),t:new Date().toISOString(),dev:d.dev,os:d.os},data));
+  fetch('https://ntfy.sh/'+ACTTOPIC,{method:'POST',body,keepalive:true,headers:{'Title':title.replace(/[·–—]/g,'-').normalize('NFKD').replace(/[^\x20-\x7E]/g,''),'Tags':'books','Priority':'2'}}).catch(()=>{});
+  const L=ls('telra-actlog')||[];L.push({title,t:Date.now()});ls('telra-actlog',L.slice(-200))}catch(e){}}
+function actStart(kind,detail){actFlush();Object.assign(ACT,{kind,detail,n:0,r:0,by:{},t0:0,t1:0});actSend(`${meName()||'Someone'} opened ${kind}`,{ev:'open',kind,detail});
+  clearInterval(ACT.timer);ACT.timer=setInterval(()=>{if(ACT.n&&Date.now()-ACT.t1>120000)actFlush()},60000)}
+function actDetail(d){if(d!==ACT.detail){actFlush();ACT.detail=d}}
+function actAnswer(ok,subj){const now=Date.now();if(!ACT.t0)ACT.t0=now;ACT.t1=now;ACT.n++;if(ok)ACT.r++;const b=ACT.by[subj||'?']=ACT.by[subj||'?']||[0,0];ok?b[0]++:b[1]++;
+  if(ACT.n>=25)actFlush()}
+function actFlush(){if(!ACT.n)return;const mins=Math.max(1,Math.round((ACT.t1-ACT.t0)/60000)+1);
+  actSend(`${meName()||'Someone'} · ${ACT.kind}${ACT.detail?' ('+ACT.detail+')':''} · ${mins} min · ${ACT.n} answered, ${ACT.r} right`,{ev:'practice',kind:ACT.kind,detail:ACT.detail,mins,n:ACT.n,r:ACT.r,by:ACT.by});
+  Object.assign(ACT,{n:0,r:0,by:{},t0:0,t1:0})}
+addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')actFlush()});
+addEventListener('pagehide',actFlush);addEventListener('hashchange',actFlush);
+function needStudent(go,kind){const n=meName();if(n){go();bar();return}
+  app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Who's practicing?</h1><select id="wn" style="width:100%;font-size:18px"><option value="">— pick your name —</option>${ROSTER.map(x=>`<option>${esc(x)}</option>`).join('')}</select><div class="row" style="justify-content:center;margin-top:10px"><button class="primary" id="wb">Start</button><button onclick="location.hash=''">Back</button></div></div>`;
+  $('#wb').onclick=()=>{const v=$('#wn').value;if(!v)return;const me=ls('telra-me')||{};ls('telra-me',{...me,name:v,team:TEAMOF[v]||me.team||'A'});go();bar()};
+  function bar(){const h=app.querySelector('h1');if(h&&!$('#asme'))h.insertAdjacentHTML('afterend',`<div class="small mute" id="asme">Practicing as <b>${esc(meName())}</b> · <a href="#" onclick="const m=ls('telra-me')||{};delete m.name;ls('telra-me',m);route();return false">not you?</a></div>`);actStart(kind,'')}}
+async function practiceLogView(){
+  const ok=async()=>{app.innerHTML=`<h1>Practice log</h1><p class="mute small">Solo practice, topic sprints and room joins by every student. The server keeps 12 hours; every time you open this page it also saves what it finds on this computer, so history builds up here. For alerts and full history on your phone, follow <b>${ACTTOPIC}</b> in the ntfy app.</p><div class="row"><button onclick="practiceLogView()">Refresh</button><button onclick="location.hash=''">Back</button></div><div id="pl" class="card" style="margin-top:10px">Loading…</div><h2 style="margin-top:14px">Every event</h2><div id="pf" class="card"></div>`;
+    let arch=ls('telra-actarchive')||{};
+    try{const t=await (await fetch('https://ntfy.sh/'+ACTTOPIC+'/json?poll=1&since=all')).text();t.trim().split('\n').filter(Boolean).forEach(l=>{const x=JSON.parse(l);if(x.event!=='message')return;let d={};try{d=JSON.parse(x.message)}catch(e){}arch[x.id]={time:x.time*1000,title:x.title,...d}});ls('telra-actarchive',arch)}catch(e){$('#pl').innerHTML='<p class="mute small">Could not reach the log server from this network; showing what this computer saved.</p>'}
+    const ev=Object.values(arch).sort((a,b)=>b.time-a.time);const wk=Date.now()-7*864e5;
+    const P={};ROSTER.forEach(n=>P[n]={last:0,mins:0,n:0,r:0,days:new Set(),joins:0});
+    ev.forEach(e=>{const p=P[e.name]||(P[e.name||'(no name)']={last:0,mins:0,n:0,r:0,days:new Set(),joins:0});p.last=Math.max(p.last,e.time);if(e.time<wk)return;
+      if(e.ev==='practice'){p.mins+=e.mins||0;p.n+=e.n||0;p.r+=e.r||0;p.days.add(new Date(e.time).toLocaleDateString('en-US',{timeZone:'America/New_York',weekday:'short'}))}if(e.ev==='join')p.joins++});
+    const fmt=t=>t?new Date(t).toLocaleString('en-US',{timeZone:'America/New_York',weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'never';
+    $('#pl').innerHTML=`<table class="small" style="width:100%;border-collapse:collapse"><tr><th align="left">Student</th><th align="left">Team</th><th>Practice (last 7 days)</th><th>Questions</th><th>Right</th><th>Days</th><th>Rooms joined</th><th align="left">Last seen</th></tr>${Object.entries(P).sort((a,b)=>b[1].mins-a[1].mins||b[1].last-a[1].last).map(([n,p])=>`<tr style="border-top:1px solid #333"><td>${esc(n)}</td><td>${TEAMOF[n]||''}</td><td align="center">${p.mins?p.mins+' min':'<span style="color:var(--bad)">0</span>'}</td><td align="center">${p.n}</td><td align="center">${p.n?Math.round(100*p.r/p.n)+'%':''}</td><td align="center">${[...p.days].join(' ')}</td><td align="center">${p.joins}</td><td>${fmt(p.last)}</td></tr>`).join('')}</table>`;
+    $('#pf').innerHTML=ev.slice(0,300).map(e=>`<div class="small" style="padding:3px 0;border-bottom:1px solid #2a2a2a">${fmt(e.time)} · ${esc(e.title||'')}</div>`).join('')||'<p class="mute small">Nothing yet.</p>'};
+  if(hostOK())return ok();
+  app.innerHTML=`<div class="card" style="max-width:420px;margin:12vh auto;text-align:center"><h1>Practice log</h1><input id="hp" type="password" placeholder="Host passcode" style="width:100%;font-size:20px;text-align:center"><p class="small" id="hm" style="color:var(--bad)"></p><button class="primary" id="hb">Open</button></div>`;
+  const go=async()=>{const h=await sha($('#hp').value.trim().toLowerCase());if(h===HOSTHASH){ls('telra-hostok',{h,exp:Date.now()+30*864e5});ok()}else $('#hm').textContent='Wrong passcode.'};$('#hb').onclick=go;$('#hp').onkeydown=e=>{if(e.key==='Enter')go()}}
 async function hostLogView(){
   const ok=async()=>{app.innerHTML=`<h1>Host log</h1><p class="mute small">Everyone who opened a host screen, on any device, in the last 12 hours (server keeps 12 h). For the full history, follow the ntfy topic in the ntfy app (see below). "Last joined as" is the student name this device last used to join a room.</p><div class="row"><button onclick="hostLogView()">Refresh</button><button onclick="location.hash=''">Back</button></div><div id="hl" class="card" style="margin-top:10px">Loading…</div><h2 style="margin-top:14px">This device only (saved here)</h2><div id="hl2" class="card"></div><p class="small mute">Phone alerts: install the free <b>ntfy</b> app → Subscribe → topic <b>${LOGTOPIC}</b>. You'll get a notification each time someone opens a host screen, and the app keeps the history.</p>`;
     const tbl=rows=>rows.length?`<table class="small" style="width:100%;border-collapse:collapse">${rows.map(r=>`<tr style="border-bottom:1px solid var(--line,#333)"><td style="padding:4px;white-space:pre-wrap">${esc(r)}</td></tr>`).join('')}</table>`:'<p class="mute small">Nothing yet.</p>';
@@ -767,7 +804,7 @@ function joinView(code){
   $('#go').onclick=()=>{let name=$('#nm').value==='__o'?$('#nmo').value.trim():$('#nm').value;if(!name){alert('Pick your name');return}
     ls('telra-me',{name,team:$('#tm').value});playerMain(code,pid,name,$('#tm').value)};
 }
-function playerMain(code,pid,name,team){
+function playerMain(code,pid,name,team){actSend(`${name} joined room ${code} (Team ${team})`,{ev:'join',name,room:code,team});
   app.innerHTML=`<div class="player grid">
    <div class="row" style="justify-content:space-between"><b>${esc(name)} <span class="seat" id="myseat"></span></b><span class="mute small" id="conn">Connecting…</span></div>
    <div id="pstatus"></div><div class="mute" style="text-align:center" id="pcat"></div>
@@ -889,7 +926,7 @@ function sprintView(){
     const step=()=>{if(phase!=='reading')return;if(k>=units.length){startClock();return}const u=units[k++];html+=u.h;$('#qq').innerHTML=html;rt=setTimeout(step,1000*u.n/spd)};step()}
   function clearT(){tEnd=0;clearTimeout(rt);$('#qt').textContent='–'}
   function show(late){if(phase!=='open'&&phase!=='reading')return;const early=phase==='reading';if(early)$('#qq').innerHTML=esc(q.question)+(q.type==='MC'?'<br>'+Object.entries(q.choices).map(([k,v])=>`<b>${k})</b> ${esc(v)}`).join('<br>'):'');phase='check';clearT();$('#qa').innerHTML=`${late?'<p class="mute">Time!</p>':''}${early?'<p class="mute">Buzzed before the end — that would be an interrupt in a match.</p>':''}<div class="ans">ANSWER: ${esc(q.answer)}</div>`;$('#y').classList.remove('hide');$('#n').classList.remove('hide')}
-  function grade(ok){if(phase!=='check')return;const sp=SPRINTS[+$('#sw').value];st[q.id]=ok?1:0;ls(key(sp.subj+sp.wk),st);ok?(ses.r++,sOk()):(ses.w++,sBad());
+  function grade(ok){if(phase!=='check')return;const sp=SPRINTS[+$('#sw').value];actDetail(sp.subj+' · '+sp.topic);actAnswer(ok,sp.subj);st[q.id]=ok?1:0;ls(key(sp.subj+sp.wk),st);ok?(ses.r++,sOk()):(ses.w++,sBad());
     $('#ses').textContent=`${ses.r+ses.w} done this session · ${ses.r} right · ${ses.w} missed`;info();next()}
   setInterval(()=>{if(!tEnd)return;const r=Math.max(0,tEnd-performance.now());$('#qt').textContent=(r/1000).toFixed(1);$('#qt').style.color=r<2000?'var(--bad)':'';if(r===0){sEnd();show(true)}},100);
   $('#ss').onchange=fill;$('#sw').onchange=load;$('#sm').onchange=load;
@@ -924,7 +961,7 @@ function soloView(){
   function draw(){$('#sq').innerHTML=esc(words.slice(0,wi).join(' ')).replace(/\n/g,'<br>')}
   function buzz(){if(phase!=='reading'&&phase!=='open')return;const intr=phase==='reading';phase='buzzed';tEnd=0;sBuzz();wi=words.length;draw();
     $('#sa').innerHTML=`<p class="mute">${intr?'You interrupted. ':''}Say your answer out loud, then check:</p><div class="ans">ANSWER: ${esc(q.answer)}</div>`;$('#sy').classList.remove('hide');$('#sn').classList.remove('hide')}
-  function grade(ok){if(phase!=='buzzed'&&phase!=='dead')return;const c=st.cats[q.category]=st.cats[q.category]||{r:0,w:0};ok?c.r++:c.w++;if(!ok)st.missed.push({category:q.category,question:q.question,answer:q.answer});save();stats();phase='idle';$('#sy').classList.add('hide');$('#sn').classList.add('hide');start()}
+  function grade(ok){if(phase!=='buzzed'&&phase!=='dead')return;actAnswer(ok,dispSubj(q));const c=st.cats[q.category]=st.cats[q.category]||{r:0,w:0};ok?c.r++:c.w++;if(!ok)st.missed.push({category:q.category,question:q.question,answer:q.answer});save();stats();phase='idle';$('#sy').classList.add('hide');$('#sn').classList.add('hide');start()}
   setInterval(()=>{if(!tEnd){if(phase!=='open')$('#stm').textContent='–';return}const r=Math.max(0,tEnd-performance.now());$('#stm').textContent=(r/1000).toFixed(1);if(r===0){tEnd=0;phase='dead';sEnd();$('#sa').innerHTML=`<p class="mute">Time. Counts as a miss.</p><div class="ans">ANSWER: ${esc(q.answer)}</div>`;$('#sn').classList.remove('hide')}},100);
   $('#sgo').onclick=start;$('#sbz').onclick=buzz;$('#sy').onclick=()=>grade(true);$('#sn').onclick=()=>grade(false);
   $('#sdl').onclick=()=>{const csv='Category,Question,Answer\n'+st.missed.map(m=>[m.category,m.question,m.answer].map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='my-missed-questions.csv';a.click()};
